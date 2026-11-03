@@ -110,7 +110,7 @@ export const AdminDashboardShell: React.FC<AdminDashboardShellProps> = ({
       setData(payload);
       setError(null);
     } catch (err: any) {
-      setError(err.message || "Tarmoq xatoligi yuz berdi.");
+      setError(err.message || 'Tarmoq xatoligi yuz berdi.');
     } finally {
       setLoading(false);
     }
@@ -439,6 +439,7 @@ export const AdminDashboardShell: React.FC<AdminDashboardShellProps> = ({
 
               {activeSection === 'reports' && (
                 <ReportsAndExportView
+                  token={token}
                   periods={data.periods}
                   teachers={data.teachers}
                   groups={data.groups}
@@ -451,6 +452,7 @@ export const AdminDashboardShell: React.FC<AdminDashboardShellProps> = ({
                 <SettingsView
                   token={token}
                   admin={data.admin}
+                  studentAccessCode={data.studentAccessCode}
                   auditLogs={data.auditLogs}
                   onRefresh={fetchBootstrapData}
                 />
@@ -464,6 +466,7 @@ export const AdminDashboardShell: React.FC<AdminDashboardShellProps> = ({
         isOpen={telegramModalOpen}
         onClose={() => setTelegramModalOpen(false)}
         activePeriod={activePeriod}
+        studentAccessCode={data?.studentAccessCode}
       />
     </div>
   );

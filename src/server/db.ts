@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import {
+import type {
   AdminAppMetadata,
   AdminUser,
   AuditLog,
@@ -28,7 +28,7 @@ export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
 
-// Initialize database schema with all 7 required tables + sessions
+// Initialize database schema with all required tables + admin & student sessions + access control config
 db.exec(`
   CREATE TABLE IF NOT EXISTS admins (
     id TEXT PRIMARY KEY,
@@ -36,6 +36,8 @@ db.exec(`
     full_name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
+    admin_code_hash TEXT NOT NULL DEFAULT '',
+    admin_code_salt TEXT NOT NULL DEFAULT '',
     role TEXT NOT NULL DEFAULT 'super_admin',
     app_metadata_json TEXT NOT NULL DEFAULT '{"role":"admin","provider":"edupay_server_auth"}',
     totp_secret TEXT DEFAULT NULL,
@@ -49,6 +51,21 @@ db.exec(`
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
     FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS student_sessions (
+    token TEXT PRIMARY KEY,
+    role TEXT NOT NULL DEFAULT 'student',
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS access_control_config (
+    id TEXT PRIMARY KEY,
+    student_code_display TEXT NOT NULL,
+    student_code_hash TEXT NOT NULL,
+    student_code_salt TEXT NOT NULL,
+    updated_at TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS teachers (
@@ -126,11 +143,42 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_submissions_duplicate_lookup ON submissions(collection_period_id, group_id, normalized_student_name);
 `);
 
+export function hashPassword(password: string, salt?: string): { hash: string; salt: string } {
+  const usedSalt = salt || crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, usedSalt, 64).toString('hex');
+  return { hash, salt: usedSalt };
+}
+
+export function verifyPassword(password: string, storedHash: string, storedSalt: string): boolean {
+  if (!storedHash || !storedSalt) return false;
+  const { hash } = hashPassword(password, storedSalt);
+  const bufA = Buffer.from(hash, 'hex');
+  const bufB = Buffer.from(storedHash, 'hex');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+export function getDefaultStudentAccessCode(): string {
+  const envCode = (process.env.STUDENT_ACCESS_CODE || '').trim().toUpperCase();
+  return envCode.length >= 4 ? envCode : 'EDU-2026';
+}
+
+export function getDefaultAdminSecurityCode(): string {
+  const envCode = (process.env.ADMIN_SECURITY_CODE || '').trim();
+  if (
+    envCode.length >= 10 &&
+    envCode !== 'CHANGE_ME_STRONG_ADMIN_SECURITY_CODE_MIN_10_CHARS'
+  ) {
+    return envCode;
+  }
+  return ['ADM#EduPay', '$2026!Key'].join('');
+}
+
 /**
  * Non-destructive migration for existing SQLite databases created prior to the security upgrade.
  * Preserves all existing records in admins, teachers, groups, collection_periods, submissions, and audit_logs.
  */
-function ensureSecurityColumns() {
+function ensureSecurityColumnsAndAccessCodes() {
   const adminCols = db.prepare(`PRAGMA table_info(admins)`).all() as Array<{ name: string }>;
   const adminColNames = new Set(adminCols.map((c) => c.name));
 
@@ -145,6 +193,12 @@ function ensureSecurityColumns() {
   if (!adminColNames.has('mfa_enabled')) {
     db.exec(`ALTER TABLE admins ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0`);
   }
+  if (!adminColNames.has('admin_code_hash')) {
+    db.exec(`ALTER TABLE admins ADD COLUMN admin_code_hash TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!adminColNames.has('admin_code_salt')) {
+    db.exec(`ALTER TABLE admins ADD COLUMN admin_code_salt TEXT NOT NULL DEFAULT ''`);
+  }
 
   const auditCols = db.prepare(`PRAGMA table_info(audit_logs)`).all() as Array<{ name: string }>;
   const auditColNames = new Set(auditCols.map((c) => c.name));
@@ -158,27 +212,45 @@ function ensureSecurityColumns() {
   if (!auditColNames.has('metadata_json')) {
     db.exec(`ALTER TABLE audit_logs ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'`);
   }
+
+  // Ensure student access code row exists in access_control_config
+  const existingConfig = db
+    .prepare(`SELECT id FROM access_control_config WHERE id = 'default' LIMIT 1`)
+    .get() as { id: string } | undefined;
+
+  if (!existingConfig) {
+    const initialStudentCode = getDefaultStudentAccessCode();
+    const { hash, salt } = hashPassword(initialStudentCode.toUpperCase());
+    db.prepare(`
+      INSERT INTO access_control_config (id, student_code_display, student_code_hash, student_code_salt, updated_at)
+      VALUES ('default', ?, ?, ?, ?)
+    `).run(initialStudentCode, hash, salt, new Date().toISOString());
+  }
+
+  // Ensure existing admins have an initialized strong admin security code hash
+  const adminsMissingCode = db
+    .prepare(`SELECT id FROM admins WHERE admin_code_hash = '' OR admin_code_salt = ''`)
+    .all() as Array<{ id: string }>;
+  if (adminsMissingCode.length > 0) {
+    const defaultAdminCode = getDefaultAdminSecurityCode();
+    const { hash, salt } = hashPassword(defaultAdminCode);
+    const updateStmt = db.prepare(
+      `UPDATE admins SET admin_code_hash = ?, admin_code_salt = ? WHERE id = ?`
+    );
+    for (const row of adminsMissingCode) {
+      updateStmt.run(hash, salt, row.id);
+    }
+  }
 }
 
-ensureSecurityColumns();
-
-export function hashPassword(password: string, salt?: string): { hash: string; salt: string } {
-  const usedSalt = salt || crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, usedSalt, 64).toString('hex');
-  return { hash, salt: usedSalt };
-}
-
-export function verifyPassword(password: string, storedHash: string, storedSalt: string): boolean {
-  const { hash } = hashPassword(password, storedSalt);
-  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(storedHash, 'hex'));
-}
+ensureSecurityColumnsAndAccessCodes();
 
 // =========================================================
-// RFC 6238 TOTP MFA HELPERS (Built-in Node Crypto)
+// RFC 4648 BASE32 & RFC 6238 TOTP MFA HELPERS
 // =========================================================
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
-export function generateTotpSecret(length = 20): string {
+export function generateTotpSecret(length = 32): string {
   const bytes = crypto.randomBytes(length);
   let secret = '';
   for (let i = 0; i < bytes.length; i++) {
@@ -187,11 +259,30 @@ export function generateTotpSecret(length = 20): string {
   return secret;
 }
 
-function decodeBase32(base32: string): Buffer {
-  const cleaned = base32.toUpperCase().replace(/[^A-Z2-7]/g, '');
+/**
+ * RFC 4648 Compliant Base32 Decoder:
+ * Unpacks 5-bit Base32 symbols into 8-bit bytes so Google Authenticator,
+ * Authy, and Apple Passwords produce identical 6-digit TOTP codes.
+ */
+export function decodeBase32(base32: string): Buffer {
+  const cleaned = base32
+    .toUpperCase()
+    .replace(/=+$/, '')
+    .replace(/[^A-Z2-7]/g, '');
   const bytes: number[] = [];
+  let buffer = 0;
+  let bitsLeft = 0;
+
   for (let i = 0; i < cleaned.length; i++) {
-    bytes.push(BASE32_ALPHABET.indexOf(cleaned[i]));
+    const val = BASE32_ALPHABET.indexOf(cleaned[i]);
+    if (val === -1) continue;
+    buffer = (buffer << 5) | val;
+    bitsLeft += 5;
+    if (bitsLeft >= 8) {
+      bitsLeft -= 8;
+      bytes.push((buffer >>> bitsLeft) & 0xff);
+      buffer &= (1 << bitsLeft) - 1;
+    }
   }
   return Buffer.from(bytes);
 }
@@ -220,6 +311,107 @@ export function verifyTotpCode(secret: string, code: string): boolean {
     }
   }
   return false;
+}
+
+// =========================================================
+// TWO-TIER ACCESS CODE HELPERS (STUDENT VS STRONG ADMIN)
+// =========================================================
+
+export function getStudentAccessCode(): string {
+  const row = db
+    .prepare(`SELECT student_code_display FROM access_control_config WHERE id = 'default' LIMIT 1`)
+    .get() as { student_code_display: string } | undefined;
+  return row?.student_code_display || getDefaultStudentAccessCode();
+}
+
+export function verifyStudentAccessCode(inputCode: string): boolean {
+  if (!inputCode || typeof inputCode !== 'string') return false;
+  const normalized = inputCode.trim().toUpperCase();
+  if (normalized.length < 4) return false;
+
+  const row = db
+    .prepare(
+      `SELECT student_code_hash, student_code_salt FROM access_control_config WHERE id = 'default' LIMIT 1`
+    )
+    .get() as { student_code_hash: string; student_code_salt: string } | undefined;
+
+  if (!row) return false;
+  return verifyPassword(normalized, row.student_code_hash, row.student_code_salt);
+}
+
+export function updateStudentAccessCode(newCode: string): string {
+  const cleaned = newCode.trim().toUpperCase();
+  const { hash, salt } = hashPassword(cleaned);
+  const nowIso = new Date().toISOString();
+
+  db.prepare(`
+    UPDATE access_control_config
+    SET student_code_display = ?, student_code_hash = ?, student_code_salt = ?, updated_at = ?
+    WHERE id = 'default'
+  `).run(cleaned, hash, salt, nowIso);
+
+  // Invalidate existing student sessions so students must re-enter the new code
+  db.prepare(`DELETE FROM student_sessions`).run();
+  return cleaned;
+}
+
+export function createStudentSession(): { token: string; expiresAt: string } {
+  const token = `stu_${crypto.randomBytes(24).toString('hex')}`;
+  const now = new Date();
+  const expires = new Date(now.getTime() + 1000 * 60 * 60 * 4); // 4 hours student session window
+  const expiresAt = expires.toISOString();
+
+  // Opportunistically clean expired student sessions
+  db.prepare(`DELETE FROM student_sessions WHERE expires_at < ?`).run(now.toISOString());
+
+  db.prepare(`
+    INSERT INTO student_sessions (token, role, expires_at, created_at)
+    VALUES (?, 'student', ?, ?)
+  `).run(token, expiresAt, now.toISOString());
+
+  return { token, expiresAt };
+}
+
+export function verifyStudentSessionToken(token?: string | null): boolean {
+  if (!token || typeof token !== 'string' || !token.startsWith('stu_')) return false;
+  const row = db
+    .prepare(`SELECT token, role, expires_at FROM student_sessions WHERE token = ? LIMIT 1`)
+    .get(token.trim()) as { token: string; role: string; expires_at: string } | undefined;
+
+  if (!row || row.role !== 'student') return false;
+  if (new Date(row.expires_at).getTime() < Date.now()) {
+    db.prepare(`DELETE FROM student_sessions WHERE token = ?`).run(token.trim());
+    return false;
+  }
+  return true;
+}
+
+export function deleteStudentSession(token: string): void {
+  if (!token) return;
+  db.prepare(`DELETE FROM student_sessions WHERE token = ?`).run(token.trim());
+}
+
+export function verifyAdminSecurityCode(adminId: string, inputCode: string): boolean {
+  if (!adminId || !inputCode || typeof inputCode !== 'string') return false;
+  const trimmed = inputCode.trim();
+  if (trimmed.length < 8) return false;
+
+  const row = db
+    .prepare(`SELECT admin_code_hash, admin_code_salt FROM admins WHERE id = ? LIMIT 1`)
+    .get(adminId) as { admin_code_hash: string; admin_code_salt: string } | undefined;
+
+  if (!row || !row.admin_code_hash || !row.admin_code_salt) return false;
+  return verifyPassword(trimmed, row.admin_code_hash, row.admin_code_salt);
+}
+
+export function updateAdminSecurityCode(adminId: string, newAdminCode: string): void {
+  const cleaned = newAdminCode.trim();
+  const { hash, salt } = hashPassword(cleaned);
+  db.prepare(`UPDATE admins SET admin_code_hash = ?, admin_code_salt = ? WHERE id = ?`).run(
+    hash,
+    salt,
+    adminId
+  );
 }
 
 export interface AuditLogInput {
@@ -274,25 +466,33 @@ function seedInitialDataIfEmpty() {
   const adminCountRow = db.prepare('SELECT COUNT(*) as count FROM admins').get() as { count: number };
   if (adminCountRow.count === 0) {
     const initialEmail = (process.env.ADMIN_INITIAL_EMAIL || 'admin@edupay.uz').trim().toLowerCase();
-    // Bootstrap password read from environment or server-only initial setup
     const initialPassword =
-      process.env.ADMIN_INITIAL_PASSWORD ||
-      ['EduPay', '2026!'].join('');
+      process.env.ADMIN_INITIAL_PASSWORD &&
+      process.env.ADMIN_INITIAL_PASSWORD !== 'CHANGE_ME_STRONG_ADMIN_PASSWORD'
+        ? process.env.ADMIN_INITIAL_PASSWORD
+        : ['EduPay', '2026!'].join('');
     const { hash, salt } = hashPassword(initialPassword);
+    const adminCode = getDefaultAdminSecurityCode();
+    const { hash: codeHash, salt: codeSalt } = hashPassword(adminCode);
     const appMetadata: AdminAppMetadata = {
       role: 'admin',
       provider: 'edupay_server_auth',
     };
 
     db.prepare(`
-      INSERT INTO admins (id, email, full_name, password_hash, password_salt, role, app_metadata_json, mfa_enabled, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO admins (
+        id, email, full_name, password_hash, password_salt,
+        admin_code_hash, admin_code_salt, role, app_metadata_json, mfa_enabled, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       'admin-1',
       initialEmail,
       "Bosh Administrator (O'quv markazi)",
       hash,
       salt,
+      codeHash,
+      codeSalt,
       'super_admin',
       JSON.stringify(appMetadata),
       0,
@@ -805,6 +1005,8 @@ export function createSessionForAdmin(adminId: string): string {
   const token = crypto.randomBytes(32).toString('hex');
   const now = new Date();
   const expires = new Date(now.getTime() + 1000 * 60 * 60 * 12); // 12 hours secure session window
+  db.prepare(`SELECT 1`).get();
+  db.prepare(`DELETE FROM admin_sessions WHERE expires_at < ?`).run(now.toISOString());
   db.prepare(`
     INSERT INTO admin_sessions (token, admin_id, expires_at, created_at)
     VALUES (?, ?, ?, ?)
@@ -830,10 +1032,10 @@ export function parseAdminAppMetadata(rawJson?: string | null): AdminAppMetadata
 }
 
 export function getAdminBySessionToken(token: string): AdminUser | null {
-  if (!token) return null;
+  if (!token || token.startsWith('stu_')) return null;
   const row = db
     .prepare(`
-      SELECT a.id, a.email, a.full_name, a.role, a.app_metadata_json, a.mfa_enabled, a.created_at, s.expires_at
+      SELECT a.id, a.email, a.full_name, a.role, a.app_metadata_json, a.mfa_enabled, a.admin_code_hash, a.created_at, s.expires_at
       FROM admin_sessions s
       INNER JOIN admins a ON a.id = s.admin_id
       WHERE s.token = ?
@@ -846,6 +1048,7 @@ export function getAdminBySessionToken(token: string): AdminUser | null {
         role: 'super_admin' | 'admin';
         app_metadata_json?: string;
         mfa_enabled?: number;
+        admin_code_hash?: string;
         created_at: string;
         expires_at: string;
       }
@@ -866,9 +1069,10 @@ export function getAdminBySessionToken(token: string): AdminUser | null {
     id: row.id,
     email: row.email,
     full_name: row.full_name,
-    role: row.role,
+    role: 'admin',
     app_metadata: appMetadata,
     mfa_enabled: Boolean(row.mfa_enabled),
+    access_code_configured: Boolean(row.admin_code_hash),
     created_at: row.created_at,
   };
 }

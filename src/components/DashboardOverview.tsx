@@ -167,7 +167,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       });
       const data = await res.json();
       if (!res.ok) {
-        setEditError(data.error || "Saqlashda xatolik yuz berdi.");
+        setEditError(data.error || 'Saqlashda xatolik yuz berdi.');
         setSavingEdit(false);
         return;
       }
@@ -214,6 +214,20 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       selectedTeacherId: teacherFilter,
       selectedGroupId: groupFilter,
     });
+
+    // Notify server endpoint to record EXCEL_YUKLAB_OLINDI audit log
+    try {
+      const params = new URLSearchParams({
+        period_id: targetPeriod.id,
+        teacher_id: teacherFilter,
+        group_id: groupFilter,
+      });
+      await fetch(`/api/admin/export-excel?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // Offline / local fallback
+    }
 
     const blob = new Blob([buffer], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

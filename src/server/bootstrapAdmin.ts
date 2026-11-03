@@ -1,6 +1,11 @@
-import crypto from 'node:crypto';
-import { db, hashPassword, logAdminAction, parseAdminAppMetadata } from './db';
-import { AdminAppMetadata } from '../types/edupay';
+import {
+  db,
+  getDefaultAdminSecurityCode,
+  hashPassword,
+  logAdminAction,
+  parseAdminAppMetadata,
+} from './db';
+import type { AdminAppMetadata } from '../types/edupay';
 
 export interface AdminBootstrapVerificationResult {
   adminExists: boolean;
@@ -26,12 +31,6 @@ interface SupabaseAdminUser {
 /**
  * Synchronizes the initial administrator account with Supabase Auth (auth.users)
  * using the server-only SUPABASE_SERVICE_ROLE_KEY if Supabase environment variables are configured.
- *
- * Security & Idempotency Guarantees:
- * - Runs strictly on the server.
- * - Never logs or returns passwords or SUPABASE_SERVICE_ROLE_KEY.
- * - Does NOT overwrite an existing Supabase Auth administrator account or password.
- * - Ensures server-controlled `app_metadata.role = "admin"` is set on the account.
  */
 async function ensureSupabaseAuthAdmin(
   initialEmail: string,
@@ -78,8 +77,6 @@ async function ensureSupabaseAuthAdmin(
     );
 
     if (existingUser) {
-      // Do NOT overwrite existing administrator password or account!
-      // Only ensure authoritative server-controlled app_metadata.role === 'admin'
       if (existingUser.app_metadata?.role === 'admin') {
         return 'verified_existing_in_supabase_auth';
       }
@@ -99,7 +96,6 @@ async function ensureSupabaseAuthAdmin(
       return updateRes.ok ? 'updated_role_in_supabase_auth' : 'supabase_unreachable';
     }
 
-    // Administrator does not exist in Supabase Auth -> perform one-time creation
     const createRes = await fetch(baseAdminAuthUrl, {
       method: 'POST',
       headers,
@@ -125,11 +121,6 @@ async function ensureSupabaseAuthAdmin(
 
 /**
  * Idempotent, one-time server-side administrator initialization and verification.
- *
- * - Reads ADMIN_INITIAL_EMAIL, ADMIN_INITIAL_PASSWORD, and SUPABASE_SERVICE_ROLE_KEY on the server.
- * - Never overwrites an existing administrator account or password.
- * - Guarantees that the initial administrator exists and has `app_metadata.role = "admin"`.
- * - Preserves all existing database records.
  */
 export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVerificationResult> {
   const configuredEmail = (process.env.ADMIN_INITIAL_EMAIL || 'admin@edupay.uz')
@@ -141,13 +132,11 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
       ? process.env.ADMIN_INITIAL_PASSWORD
       : ['EduPay', '2026!'].join('');
 
-  // 1. Check Supabase Auth (when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are provided)
   const supabaseAuthStatus = await ensureSupabaseAuthAdmin(configuredEmail, configuredPassword);
 
-  // 2. Check existing administrator account in persistent database (never overwrite if exists!)
   const existingByEmail = db
     .prepare(
-      `SELECT id, email, full_name, role, app_metadata_json, created_at FROM admins WHERE LOWER(email) = ? LIMIT 1`
+      `SELECT id, email, full_name, role, app_metadata_json, admin_code_hash, admin_code_salt, created_at FROM admins WHERE LOWER(email) = ? LIMIT 1`
     )
     .get(configuredEmail) as
     | {
@@ -156,6 +145,8 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
         full_name: string;
         role: string;
         app_metadata_json?: string | null;
+        admin_code_hash?: string | null;
+        admin_code_salt?: string | null;
         created_at: string;
       }
     | undefined;
@@ -164,7 +155,7 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
     existingByEmail ||
     (db
       .prepare(
-        `SELECT id, email, full_name, role, app_metadata_json, created_at FROM admins ORDER BY created_at ASC LIMIT 1`
+        `SELECT id, email, full_name, role, app_metadata_json, admin_code_hash, admin_code_salt, created_at FROM admins ORDER BY created_at ASC LIMIT 1`
       )
       .get() as
       | {
@@ -173,15 +164,25 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
           full_name: string;
           role: string;
           app_metadata_json?: string | null;
+          admin_code_hash?: string | null;
+          admin_code_salt?: string | null;
           created_at: string;
         }
       | undefined);
 
   if (fallbackExistingAdmin) {
+    // Ensure strong admin security code hash is present without overwriting an existing one
+    if (!fallbackExistingAdmin.admin_code_hash || !fallbackExistingAdmin.admin_code_salt) {
+      const { hash: codeHash, salt: codeSalt } = hashPassword(getDefaultAdminSecurityCode());
+      db.prepare(`UPDATE admins SET admin_code_hash = ?, admin_code_salt = ? WHERE id = ?`).run(
+        codeHash,
+        codeSalt,
+        fallbackExistingAdmin.id
+      );
+    }
+
     const parsedMeta = parseAdminAppMetadata(fallbackExistingAdmin.app_metadata_json);
     if (parsedMeta && parsedMeta.role === 'admin') {
-      // Account exists and already has server-controlled app_metadata.role = "admin".
-      // Idempotent return: do NOT overwrite password or account details.
       return {
         adminExists: true,
         adminId: fallbackExistingAdmin.id,
@@ -193,7 +194,6 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
       };
     }
 
-    // Repair missing/invalid app_metadata.role without touching password_hash or profile fields
     const authoritativeMetadata: AdminAppMetadata = {
       role: 'admin',
       provider: 'edupay_server_auth',
@@ -223,8 +223,9 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
     };
   }
 
-  // 3. No administrator account exists -> perform one-time secure creation
+  // No administrator account exists -> perform one-time secure creation
   const { hash, salt } = hashPassword(configuredPassword);
+  const { hash: codeHash, salt: codeSalt } = hashPassword(getDefaultAdminSecurityCode());
   const authoritativeMetadata: AdminAppMetadata = {
     role: 'admin',
     provider: 'edupay_server_auth',
@@ -234,14 +235,17 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
 
   db.prepare(`
     INSERT INTO admins (
-      id, email, full_name, password_hash, password_salt, role, app_metadata_json, mfa_enabled, created_at
-    ) VALUES (?, ?, ?, ?, ?, 'super_admin', ?, 0, ?)
+      id, email, full_name, password_hash, password_salt,
+      admin_code_hash, admin_code_salt, role, app_metadata_json, mfa_enabled, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'super_admin', ?, 0, ?)
   `).run(
     newAdminId,
     configuredEmail,
     "Bosh Administrator (O'quv markazi)",
     hash,
     salt,
+    codeHash,
+    codeSalt,
     JSON.stringify(authoritativeMetadata),
     nowIso
   );

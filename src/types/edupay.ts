@@ -13,6 +13,7 @@ export interface AdminUser {
   role: 'admin';
   app_metadata: AdminAppMetadata;
   mfa_enabled?: boolean;
+  access_code_configured?: boolean;
   created_at: string;
 }
 
@@ -113,6 +114,7 @@ export interface PublicAppContext {
 
 export interface DashboardBootstrapData {
   admin: AdminUser;
+  studentAccessCode: string;
   teachers: Teacher[];
   groups: Group[];
   periods: CollectionPeriod[];

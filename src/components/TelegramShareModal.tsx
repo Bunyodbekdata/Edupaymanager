@@ -1,109 +1,75 @@
 import React, { useState, useMemo } from 'react';
-import { Send, Copy, Check, QrCode, X, ExternalLink } from 'lucide-react';
+import { Send, Copy, Check, QrCode, X, ExternalLink, KeyRound } from 'lucide-react';
 import { CollectionPeriod } from '../types/edupay';
+import { generateQrCodeMatrix } from '../utils/qrCode';
 
 interface TelegramShareModalProps {
   isOpen: boolean;
   onClose: () => void;
   activePeriod: CollectionPeriod | null;
-}
-
-/**
- * Generates a deterministic 21x21 QR-style matrix SVG for the public submission URL
- * so the QR code renders crisply offline without external image dependencies.
- */
-function buildDeterministicQrMatrix(url: string): boolean[][] {
-  const size = 21;
-  const grid: boolean[][] = Array.from({ length: size }, () => Array(size).fill(false));
-  const reserved: boolean[][] = Array.from({ length: size }, () => Array(size).fill(false));
-
-  // Draw standard 7x7 finder patterns at 3 corners
-  const drawFinder = (r0: number, c0: number) => {
-    for (let r = -1; r <= 7; r++) {
-      for (let c = -1; c <= 7; c++) {
-        const rr = r0 + r;
-        const cc = c0 + c;
-        if (rr < 0 || rr >= size || cc < 0 || cc >= size) continue;
-        reserved[rr][cc] = true;
-        if (r >= 0 && r <= 6 && c >= 0 && c <= 6) {
-          const isBorder = r === 0 || r === 6 || c === 0 || c === 6;
-          const isCenter = r >= 2 && r <= 4 && c >= 2 && c <= 4;
-          grid[rr][cc] = isBorder || isCenter;
-        }
-      }
-    }
-  };
-
-  drawFinder(0, 0);
-  drawFinder(0, size - 7);
-  drawFinder(size - 7, 0);
-
-  // Timing patterns
-  for (let i = 8; i < size - 8; i++) {
-    reserved[6][i] = true;
-    reserved[i][6] = true;
-    grid[6][i] = i % 2 === 0;
-    grid[i][6] = i % 2 === 0;
-  }
-
-  // Fill remaining modules deterministically from URL bytes
-  let hash = 2166136261;
-  for (let i = 0; i < url.length; i++) {
-    hash ^= url.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  let seed = hash >>> 0;
-  for (let r = 0; r < size; r++) {
-    for (let c = 0; c < size; c++) {
-      if (reserved[r][c]) continue;
-      seed = (Math.imul(seed, 1664525) + 1013904223 + r * 31 + c * 17) >>> 0;
-      grid[r][c] = (seed & 1) === 1;
-    }
-  }
-
-  return grid;
+  studentAccessCode?: string;
 }
 
 export const TelegramShareModal: React.FC<TelegramShareModalProps> = ({
   isOpen,
   onClose,
   activePeriod,
+  studentAccessCode = 'EDU-2026',
 }) => {
-  const [copied, setCopied] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [embedCodeInUrl, setEmbedCodeInUrl] = useState(true);
 
-  const publicUrl = useMemo(() => {
+  const basePublicUrl = useMemo(() => {
     if (typeof window === 'undefined') return 'http://localhost:3000/';
     return `${window.location.origin}/`;
   }, []);
 
-  const qrMatrix = useMemo(() => buildDeterministicQrMatrix(publicUrl), [publicUrl]);
+  const publicUrl = useMemo(() => {
+    if (embedCodeInUrl && studentAccessCode) {
+      return `${basePublicUrl}?code=${encodeURIComponent(studentAccessCode)}`;
+    }
+    return basePublicUrl;
+  }, [basePublicUrl, embedCodeInUrl, studentAccessCode]);
+
+  const qrMatrix = useMemo(() => generateQrCodeMatrix(publicUrl), [publicUrl]);
+  const qrSize = qrMatrix.length;
 
   if (!isOpen) return null;
 
   const shareText = activePeriod
-    ? `Hurmatli o'quvchilar! ${activePeriod.title} oyi uchun oylik to'lov sanangizni quyidagi havola orqali kiriting:`
-    : "Hurmatli o'quvchilar! Oylik to'lov sanangizni quyidagi havola orqali kiriting:";
+    ? `Hurmatli o'quvchilar! ${activePeriod.title} oyi uchun oylik to'lov sanangizni quyidagi havola orqali kiriting (O'quvchi kirish kodi: ${studentAccessCode}):`
+    : `Hurmatli o'quvchilar! Oylik to'lov sanangizni quyidagi havola orqali kiriting (O'quvchi kirish kodi: ${studentAccessCode}):`;
 
   const telegramShareUrl = `https://t.me/share/url?url=${encodeURIComponent(
     publicUrl
   )}&text=${encodeURIComponent(shareText)}`;
 
-  const handleCopy = async () => {
+  const handleCopyUrl = async () => {
     try {
       await navigator.clipboard.writeText(publicUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
+      setCopiedUrl(true);
+      setTimeout(() => setCopiedUrl(false), 2500);
     } catch {
-      // Fallback copy
       const input = document.createElement('input');
       input.value = publicUrl;
       document.body.appendChild(input);
       input.select();
       document.execCommand('copy');
       document.body.removeChild(input);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
+      setCopiedUrl(true);
+      setTimeout(() => setCopiedUrl(false), 2500);
+    }
+  };
+
+  const handleCopyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(studentAccessCode);
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2500);
+    } catch {
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2500);
     }
   };
 
@@ -114,7 +80,7 @@ export const TelegramShareModal: React.FC<TelegramShareModalProps> = ({
       aria-labelledby="telegram-share-title"
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
     >
-      <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 space-y-5 shadow-xl">
+      <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-xl">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center">
@@ -125,7 +91,7 @@ export const TelegramShareModal: React.FC<TelegramShareModalProps> = ({
                 Telegramga ulashish va QR kod
               </h2>
               <p className="text-xs text-slate-500">
-                Yagona havola har oy avtomatik faol oyni ko&apos;rsatadi
+                Haqiqiy skanerlanadigan ISO/IEC 18004 QR kod va o&apos;quvchi kirish kodi
               </p>
             </div>
           </div>
@@ -139,11 +105,52 @@ export const TelegramShareModal: React.FC<TelegramShareModalProps> = ({
           </button>
         </div>
 
+        {/* Active Student Access Code Box */}
+        <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-xl flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <KeyRound className="w-4 h-4 text-sky-700 shrink-0" />
+            <div>
+              <div className="text-[11px] text-slate-500">O&apos;quvchi kirish kodi:</div>
+              <div className="text-sm font-mono font-bold text-slate-900 tracking-wider">
+                {studentAccessCode}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleCopyCode}
+            className="px-3 py-1.5 bg-white border border-sky-200 hover:bg-sky-50 text-sky-900 text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
+          >
+            {copiedCode ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Nusxalandi</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5" />
+                <span>Kodni nusxalash</span>
+              </>
+            )}
+          </button>
+        </div>
+
         {/* Public Link Copy Box */}
-        <div className="space-y-1.5">
-          <label className="block text-xs font-semibold text-slate-700">
-            O&apos;quvchilar uchun umumiy havola:
-          </label>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="block text-xs font-semibold text-slate-700">
+              O&apos;quvchilar uchun umumiy havola:
+            </label>
+            <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={embedCodeInUrl}
+                onChange={(e) => setEmbedCodeInUrl(e.target.checked)}
+                className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+              />
+              <span>Havolaga kodni qo&apos;shish</span>
+            </label>
+          </div>
           <div className="flex items-center gap-2">
             <input
               type="text"
@@ -154,10 +161,10 @@ export const TelegramShareModal: React.FC<TelegramShareModalProps> = ({
             />
             <button
               type="button"
-              onClick={handleCopy}
+              onClick={handleCopyUrl}
               className="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
             >
-              {copied ? (
+              {copiedUrl ? (
                 <>
                   <Check className="w-3.5 h-3.5 text-emerald-400" />
                   <span>Nusxalandi!</span>
@@ -172,15 +179,17 @@ export const TelegramShareModal: React.FC<TelegramShareModalProps> = ({
           </div>
         </div>
 
-        {/* QR Code Representation */}
+        {/* Real ISO/IEC 18004 QR Code SVG with 4-module quiet zone */}
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col items-center space-y-2.5">
           <div className="bg-white p-3 rounded-xl border border-slate-200">
             <svg
-              viewBox="0 0 21 21"
-              className="w-36 h-36 text-slate-900"
+              viewBox={`-2 -2 ${qrSize + 4} ${qrSize + 4}`}
+              className="w-40 h-40 text-slate-900"
+              shapeRendering="crispEdges"
               role="img"
               aria-label="O'quvchilar sahifasi QR kodi"
             >
+              <rect x={-2} y={-2} width={qrSize + 4} height={qrSize + 4} fill="#ffffff" />
               {qrMatrix.map((row, rIdx) =>
                 row.map((cell, cIdx) =>
                   cell ? (
@@ -197,9 +206,9 @@ export const TelegramShareModal: React.FC<TelegramShareModalProps> = ({
               )}
             </svg>
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-slate-600">
-            <QrCode className="w-3.5 h-3.5 text-slate-400" />
-            <span>O&apos;quvchilar telefon kamerasi orqali kirishi uchun QR kod</span>
+          <div className="flex items-center gap-1.5 text-xs text-slate-600 text-center">
+            <QrCode className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <span>O&apos;quvchilar telefon kamerasi orqali skanerlashi uchun haqiqiy QR kod</span>
           </div>
         </div>
 

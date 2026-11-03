@@ -7,7 +7,9 @@ import { z } from 'zod';
 import {
   db,
   createSessionForAdmin,
+  createStudentSession,
   deleteAdminSession,
+  deleteStudentSession,
   generateTotpCode,
   generateTotpSecret,
   getActiveCollectionPeriod,
@@ -18,10 +20,16 @@ import {
   getAllSubmissions,
   getAllTeachers,
   getRecentAuditLogs,
+  getStudentAccessCode,
   hashPassword,
   logAdminAction,
   parseAdminAppMetadata,
+  updateAdminSecurityCode,
+  updateStudentAccessCode,
+  verifyAdminSecurityCode,
   verifyPassword,
+  verifyStudentAccessCode,
+  verifyStudentSessionToken,
   verifyTotpCode,
 } from './src/server/db';
 import {
@@ -30,7 +38,10 @@ import {
   compareUzbekNames,
   formatDateUz,
   normalizeStudentName,
+  validateCollectionPeriodWindow,
   validatePaymentDate,
+  validateStrongAdminCode,
+  validateStudentAccessCode,
   validateStudentName,
 } from './src/utils/edupayLogic';
 import { generateSubmissionsExcelBuffer } from './src/utils/excelExport';
@@ -45,20 +56,36 @@ interface AuthenticatedRequest extends Request {
 }
 
 // =========================================================
-// RATE LIMITING & BRUTE-FORCE PROTECTION
+// RATE LIMITING & BRUTE-FORCE PROTECTION (WITH MEMORY CLEANUP)
 // =========================================================
 const submissionRateLimitMap = new Map<string, { count: number; resetAt: number }>();
 const loginRateLimitMap = new Map<string, { failedCount: number; lockUntil: number }>();
+const studentCodeRateLimitMap = new Map<string, { failedCount: number; lockUntil: number }>();
 
 export function resetSecurityRateLimits(): void {
   submissionRateLimitMap.clear();
   loginRateLimitMap.clear();
+  studentCodeRateLimitMap.clear();
+}
+
+function pruneExpiredRateLimits(): void {
+  const now = Date.now();
+  for (const [k, v] of submissionRateLimitMap.entries()) {
+    if (v.resetAt < now) submissionRateLimitMap.delete(k);
+  }
+  for (const [k, v] of loginRateLimitMap.entries()) {
+    if (v.lockUntil !== 0 && v.lockUntil <= now) loginRateLimitMap.delete(k);
+  }
+  for (const [k, v] of studentCodeRateLimitMap.entries()) {
+    if (v.lockUntil !== 0 && v.lockUntil <= now) studentCodeRateLimitMap.delete(k);
+  }
 }
 
 function checkPublicSubmissionRateLimit(ip: string): boolean {
+  pruneExpiredRateLimits();
   const now = Date.now();
   const windowMs = 60 * 1000; // 1 minute
-  const maxRequests = 20;
+  const maxRequests = 40; // Supports classroom bursts while blocking automated floods
   const entry = submissionRateLimitMap.get(ip);
   if (!entry || entry.resetAt < now) {
     submissionRateLimitMap.set(ip, { count: 1, resetAt: now + windowMs });
@@ -76,6 +103,7 @@ function getLoginAttemptKey(ip: string, email: string): string {
 }
 
 function isLoginLockedOut(ip: string, email: string): boolean {
+  pruneExpiredRateLimits();
   const key = getLoginAttemptKey(ip, email);
   const entry = loginRateLimitMap.get(key);
   if (!entry) return false;
@@ -101,6 +129,29 @@ function clearFailedLoginAttempts(ip: string, email: string): void {
   loginRateLimitMap.delete(getLoginAttemptKey(ip, email));
 }
 
+function isStudentCodeLockedOut(ip: string): boolean {
+  pruneExpiredRateLimits();
+  const entry = studentCodeRateLimitMap.get(ip);
+  if (!entry) return false;
+  if (entry.lockUntil > Date.now()) return true;
+  if (entry.lockUntil !== 0 && entry.lockUntil <= Date.now()) {
+    studentCodeRateLimitMap.delete(ip);
+  }
+  return false;
+}
+
+function recordFailedStudentCodeAttempt(ip: string): number {
+  const current = studentCodeRateLimitMap.get(ip) || { failedCount: 0, lockUntil: 0 };
+  const nextCount = current.failedCount + 1;
+  const lockUntil = nextCount >= 10 ? Date.now() + 10 * 60 * 1000 : 0;
+  studentCodeRateLimitMap.set(ip, { failedCount: nextCount, lockUntil });
+  return nextCount;
+}
+
+function clearFailedStudentCodeAttempts(ip: string): void {
+  studentCodeRateLimitMap.delete(ip);
+}
+
 // =========================================================
 // PRIVILEGE ESCALATION & MASS ASSIGNMENT DETECTOR
 // =========================================================
@@ -114,6 +165,8 @@ const FORBIDDEN_PRIVILEGE_KEYS = new Set([
   'admin_id',
   'password_hash',
   'password_salt',
+  'admin_code_hash',
+  'admin_code_salt',
 ]);
 
 function containsPrivilegeEscalationAttempt(body: unknown): string | null {
@@ -128,36 +181,98 @@ function containsPrivilegeEscalationAttempt(body: unknown): string | null {
 }
 
 // =========================================================
+// STUDENT ACCESS VERIFICATION HELPER
+// =========================================================
+function hasValidStudentAccess(req: Request): boolean {
+  const headerToken =
+    typeof req.headers['x-student-token'] === 'string'
+      ? req.headers['x-student-token'].trim()
+      : '';
+  if (headerToken && verifyStudentSessionToken(headerToken)) {
+    return true;
+  }
+
+  const headerCode =
+    typeof req.headers['x-student-code'] === 'string'
+      ? req.headers['x-student-code'].trim()
+      : '';
+  if (headerCode && verifyStudentAccessCode(headerCode)) {
+    return true;
+  }
+
+  const queryCode =
+    typeof req.query.student_code === 'string' ? req.query.student_code.trim() : '';
+  if (queryCode && verifyStudentAccessCode(queryCode)) {
+    return true;
+  }
+
+  const bodyCode =
+    req.body && typeof req.body === 'object' && typeof req.body.student_access_code === 'string'
+      ? req.body.student_access_code.trim()
+      : '';
+  if (bodyCode && verifyStudentAccessCode(bodyCode)) {
+    return true;
+  }
+
+  return false;
+}
+
+// =========================================================
 // AUTHORITATIVE ADMIN AUTHENTICATION MIDDLEWARE
+// Strictly blocks student tokens, student codes, or non-admin users
 // =========================================================
 function requireAdminAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   const queryToken = typeof req.query.token === 'string' ? req.query.token : undefined;
+  const studentHeaderToken =
+    typeof req.headers['x-student-token'] === 'string'
+      ? req.headers['x-student-token'].trim()
+      : undefined;
+
   const token =
     authHeader && authHeader.startsWith('Bearer ')
       ? authHeader.slice('Bearer '.length).trim()
       : queryToken;
 
   if (!token) {
+    if (studentHeaderToken) {
+      logAdminAction({
+        adminUserId: 'student',
+        adminEmail: 'student@public',
+        action: 'STUDENT_ADMIN_CROSSOVER_BLOCKED',
+        affectedRecordId: req.originalUrl,
+        details: `O'quvchi sessiyasi orqali administrator manziliga o'tish urinishi bloklandi: ${req.method} ${req.originalUrl}`,
+        metadata: { ip: req.ip || 'unknown' },
+      });
+      return res.status(403).json({
+        error:
+          "Xavfsizlik chegarasi: O'quvchi kirish kodi bilan Administrator paneliga o'tish qat'iyan taqiqlangan!",
+      });
+    }
     return res.status(401).json({
-      error: "Ruxsat etilmagan: Administrator tizimga kirmagan.",
+      error: 'Ruxsat etilmagan: Administrator tizimga kirmagan.',
     });
   }
 
-  // Non-admin or forged JWT/Bearer token check:
-  // If a public student or non-admin user passes a non-admin token or forged JWT payload,
-  // verify server-side session & authoritative app_metadata.role === 'admin'
-  if (token.startsWith('student-') || token.startsWith('user-') || token.includes('.')) {
+  // Block any student session token (stu_*), student code, or forged JWT payload
+  if (
+    token.startsWith('stu_') ||
+    token.startsWith('student-') ||
+    token.startsWith('user-') ||
+    token.includes('.') ||
+    verifyStudentAccessCode(token)
+  ) {
     logAdminAction({
       adminUserId: 'anonymous',
       adminEmail: 'unauthorized@public',
       action: 'UNAUTHORIZED_ADMIN_ACCESS_BLOCKED',
       affectedRecordId: req.originalUrl,
-      details: `Administrator bo'lmagan foydalanuvchi tomonidan himoyalangan manzilga kirish urinishi rad etildi: ${req.method} ${req.originalUrl}`,
+      details: `O'quvchi kodi yoki administrator bo'lmagan token bilan himoyalangan manzilga kirish urinishi rad etildi: ${req.method} ${req.originalUrl}`,
       metadata: { ip: req.ip || 'unknown' },
     });
     return res.status(403).json({
-      error: "Kirish rad etildi: Sizda administrator huquqi mavjud emas.",
+      error:
+        "Kirish rad etildi: O'quvchi kodi yoki ruxsatsiz token bilan administrator paneliga kirish taqiqlangan.",
     });
   }
 
@@ -170,7 +285,7 @@ function requireAdminAuth(req: AuthenticatedRequest, res: Response, next: NextFu
 
   if (admin.app_metadata?.role !== 'admin') {
     return res.status(403).json({
-      error: "Kirish rad etildi: Sizda administrator huquqi mavjud emas.",
+      error: 'Kirish rad etildi: Sizda administrator huquqi mavjud emas.',
     });
   }
 
@@ -183,9 +298,13 @@ export async function createApp() {
   await verifyAndBootstrapInitialAdmin();
   const app = express();
 
+  // Enable proxy trust so req.ip reflects true client IP behind Vercel, Render, Railway, Cloudflare, or Nginx
+  app.set('trust proxy', 1);
+
   // Security headers middleware
   app.use((_req: Request, res: Response, next: NextFunction) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
     next();
@@ -195,7 +314,6 @@ export async function createApp() {
 
   // =========================================================
   // DIRECT TABLE / REST ENDPOINT BLOCKING (RLS EQUIVALENT)
-  // Blocks any direct unauthenticated/public table queries or mutations
   // =========================================================
   app.all(
     [
@@ -230,13 +348,95 @@ export async function createApp() {
   );
 
   // =========================================================
-  // PUBLIC STUDENT ENDPOINTS (Strictly scoped, no student PII leaked)
+  // STUDENT ACCESS CODE ENDPOINTS (Strictly student-scoped)
+  // =========================================================
+  const studentVerifyCodeSchema = z
+    .object({
+      access_code: z.string().trim().min(1, "Iltimos, o'quvchi kirish kodini kiriting.").max(64),
+    })
+    .strict();
+
+  app.post('/api/public/verify-code', (req: Request, res: Response) => {
+    try {
+      const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+      if (isStudentCodeLockedOut(clientIp)) {
+        return res.status(429).json({
+          error:
+            "Juda ko'p noto'g'ri kod kiritildi. Iltimos, 10 daqiqadan so'ng qayta urinib ko'ring.",
+        });
+      }
+
+      const privKey = containsPrivilegeEscalationAttempt(req.body);
+      if (privKey) {
+        logAdminAction({
+          adminUserId: 'anonymous',
+          adminEmail: 'public@anon',
+          action: 'PRIVILEGE_ESCALATION_BLOCKED',
+          affectedRecordId: '/api/public/verify-code',
+          details: `O'quvchi kodini tekshirishda ruxsat etilmagan "${privKey}" maydoni yuborildi.`,
+          metadata: { forbiddenField: privKey, ip: clientIp },
+        });
+        return res.status(403).json({
+          error: 'Xavfsizlik xatoligi: Ruxsat etilmagan tizim maydonlarini yuborish taqiqlangan.',
+        });
+      }
+
+      const parsed = studentVerifyCodeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: parsed.error.issues[0]?.message || "Iltimos, o'quvchi kirish kodini kiriting.",
+        });
+      }
+
+      const { access_code } = parsed.data;
+      if (!verifyStudentAccessCode(access_code)) {
+        recordFailedStudentCodeAttempt(clientIp);
+        return res.status(401).json({
+          error:
+            "O'quvchi kirish kodi noto'g'ri. Iltimos, o'qituvchingiz yoki markaz administratori bergan kodni tekshirib qayta kiriting.",
+        });
+      }
+
+      clearFailedStudentCodeAttempts(clientIp);
+      const { token, expiresAt } = createStudentSession();
+
+      return res.json({
+        valid: true,
+        role: 'student',
+        studentToken: token,
+        expiresAt,
+      });
+    } catch (error) {
+      console.error('Error in POST /api/public/verify-code:', error);
+      return res.status(500).json({ error: 'Kodni tekshirishda server xatoligi yuz berdi.' });
+    }
+  });
+
+  app.post('/api/public/logout-student', (req: Request, res: Response) => {
+    const headerToken =
+      typeof req.headers['x-student-token'] === 'string'
+        ? req.headers['x-student-token'].trim()
+        : '';
+    if (headerToken) {
+      deleteStudentSession(headerToken);
+    }
+    res.json({ success: true });
+  });
+
+  // =========================================================
+  // PUBLIC STUDENT ENDPOINTS (Gated by Student Access Code)
   // =========================================================
 
-  app.get('/api/public/context', (_req: Request, res: Response) => {
+  app.get('/api/public/context', (req: Request, res: Response) => {
     try {
+      if (!hasValidStudentAccess(req)) {
+        return res.status(401).json({
+          code: 'STUDENT_CODE_REQUIRED',
+          error: "O'quvchi formasini ochish uchun avval o'quvchi kirish kodini kiriting.",
+        });
+      }
+
       const activePeriod = getActiveCollectionPeriod();
-      // Only active teachers and strictly safe public columns (no phone numbers, no internal metadata)
       const teachers = getAllTeachers()
         .filter((t) => t.status === 'active')
         .sort((a, b) => compareUzbekNames(a.full_name, b.full_name))
@@ -275,6 +475,7 @@ export async function createApp() {
       group_id: z.string().trim().min(1, 'Iltimos, guruhni tanlang.').max(100),
       student_full_name: z.string().trim().min(1, 'Iltimos, ism va familiyangizni kiriting.').max(120),
       payment_date: z.string().trim().min(1, "Iltimos, to'lov sanasini tanlang.").max(20),
+      student_access_code: z.string().trim().max(64).optional(),
     })
     .strict();
 
@@ -298,14 +499,7 @@ export async function createApp() {
           metadata: { forbiddenField: privKey, ip: clientIp },
         });
         return res.status(403).json({
-          error: "Xavfsizlik xatoligi: Ruxsat etilmagan tizim maydonlarini yuborish taqiqlangan.",
-        });
-      }
-
-      const activePeriod = getActiveCollectionPeriod();
-      if (!activePeriod || activePeriod.status !== 'active') {
-        return res.status(400).json({
-          error: "Hozirgi vaqtda faol oylik to'lov yig'imi mavjud emas yoki yig'im muddati yopilgan.",
+          error: 'Xavfsizlik xatoligi: Ruxsat etilmagan tizim maydonlarini yuborish taqiqlangan.',
         });
       }
 
@@ -319,6 +513,30 @@ export async function createApp() {
         }
         const firstIssue = parsed.error.issues[0]?.message || "Ma'lumotlar to'liq kiritilmadi.";
         return res.status(400).json({ error: firstIssue });
+      }
+
+      if (!hasValidStudentAccess(req)) {
+        return res.status(401).json({
+          code: 'STUDENT_CODE_REQUIRED',
+          error:
+            "Ma'lumot yuborish uchun o'quvchi kirish kodi tasdiqlanmagan. Iltimos, o'quvchi kodini kiriting.",
+        });
+      }
+
+      const activePeriod = getActiveCollectionPeriod();
+      if (!activePeriod || activePeriod.status !== 'active') {
+        return res.status(400).json({
+          error: "Hozirgi vaqtda faol oylik to'lov yig'imi mavjud emas yoki yig'im muddati yopilgan.",
+        });
+      }
+
+      // Check collection period opening & closing window
+      const windowCheck = validateCollectionPeriodWindow(
+        activePeriod.start_date,
+        activePeriod.closing_date
+      );
+      if (!windowCheck.valid) {
+        return res.status(400).json({ error: windowCheck.error });
       }
 
       const { teacher_id, group_id, student_full_name, payment_date } = parsed.data;
@@ -404,7 +622,6 @@ export async function createApp() {
         nowIso
       );
 
-      // Return ONLY the confirmation summary for this submission — never expose full table or internal IDs
       res.status(201).json({
         submission: {
           id: newId,
@@ -426,17 +643,16 @@ export async function createApp() {
   });
 
   // =========================================================
-  // ADMIN AUTHENTICATION ENDPOINTS (NO PUBLIC SIGNUP!)
+  // ADMIN AUTHENTICATION ENDPOINTS (WITH STRONG ADMIN CODE)
   // =========================================================
 
-  // Explicitly block any public admin registration or signup endpoints
   app.all(['/api/auth/register', '/api/auth/signup', '/api/admin/register'], (req: Request, res: Response) => {
     logAdminAction({
       adminUserId: 'anonymous',
       adminEmail: 'public@anon',
       action: 'UNAUTHORIZED_SIGNUP_BLOCKED',
       affectedRecordId: req.path,
-      details: "Ommaviy foydalanuvchi tomonidan yangi administrator hisobi ochish urinishi bloklandi.",
+      details: 'Ommaviy foydalanuvchi tomonidan yangi administrator hisobi ochish urinishi bloklandi.',
     });
     return res.status(403).json({
       error: "Yangi administrator hisobini ommaviy ro'yxatdan o'tkazish qat'iyan taqiqlangan.",
@@ -447,6 +663,7 @@ export async function createApp() {
     .object({
       email: z.string().trim().email("Elektron pochta manzili noto'g'ri.").max(120),
       password: z.string().min(1, 'Parolni kiriting.').max(128),
+      admin_code: z.string().trim().min(1, 'Maxfiy administrator kodini kiriting.').max(128),
       mfa_code: z.string().trim().optional(),
     })
     .strict();
@@ -464,18 +681,43 @@ export async function createApp() {
           metadata: { forbiddenField: privKey },
         });
         return res.status(403).json({
-          error: "Xavfsizlik xatoligi: Ruxsat etilmagan maydonlar aniqlandi.",
+          error: 'Xavfsizlik xatoligi: Ruxsat etilmagan maydonlar aniqlandi.',
+        });
+      }
+
+      // Check if someone attempted to use the Student Access Code in admin_code or password
+      const rawAdminCode = typeof req.body?.admin_code === 'string' ? req.body.admin_code.trim() : '';
+      const rawPassword = typeof req.body?.password === 'string' ? req.body.password.trim() : '';
+      if (
+        (rawAdminCode && verifyStudentAccessCode(rawAdminCode)) ||
+        (rawPassword && verifyStudentAccessCode(rawPassword))
+      ) {
+        const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+        logAdminAction({
+          adminUserId: 'student',
+          adminEmail: typeof req.body?.email === 'string' ? req.body.email : 'student@public',
+          action: 'STUDENT_CODE_REJECTED_AT_ADMIN_LOGIN',
+          affectedRecordId: '/api/auth/login',
+          details:
+            "O'quvchi kirish kodi yordamida Administrator paneliga kirishga urinish aniqlandi va qat'iy bloklandi.",
+          metadata: { ip: clientIp },
+        });
+        return res.status(403).json({
+          error:
+            "Xavfsizlik chegarasi: O'quvchi kirish kodi bilan Administrator paneliga kirish qat'iyan taqiqlangan! Administrator paneli maxsus kuchaytirilgan kod bilan himoyalangan.",
         });
       }
 
       const parsed = loginSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({
-          error: 'Iltimos, elektron pochta va parolni kiriting.',
+          error:
+            parsed.error.issues[0]?.message ||
+            'Iltimos, elektron pochta, parol va maxfiy administrator kodini kiriting.',
         });
       }
 
-      const { email, password, mfa_code } = parsed.data;
+      const { email, password, admin_code, mfa_code } = parsed.data;
       const cleanEmail = email.trim().toLowerCase();
       const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
 
@@ -485,7 +727,7 @@ export async function createApp() {
           adminEmail: cleanEmail,
           action: 'LOGIN_LOCKED_OUT',
           affectedRecordId: cleanEmail,
-          details: `Ko'p marta noto'g'ri parol terilgani sababli kirish vaqtincha bloklandi (IP: ${clientIp}).`,
+          details: `Ko'p marta noto'g'ri parol yoki admin kodi terilgani sababli kirish vaqtincha bloklandi (IP: ${clientIp}).`,
         });
         return res.status(429).json({
           error:
@@ -503,6 +745,8 @@ export async function createApp() {
             role: 'super_admin' | 'admin';
             password_hash: string;
             password_salt: string;
+            admin_code_hash: string;
+            admin_code_salt: string;
             app_metadata_json?: string;
             totp_secret?: string | null;
             mfa_enabled?: number;
@@ -510,17 +754,21 @@ export async function createApp() {
           }
         | undefined;
 
-      // Generic error message to prevent account enumeration
-      const genericAuthError = "Elektron pochta yoki parol noto'g'ri.";
+      const genericAuthError =
+        "Elektron pochta, parol yoki maxfiy administrator kodi noto'g'ri.";
 
-      if (!adminRow || !verifyPassword(password, adminRow.password_hash, adminRow.password_salt)) {
+      if (
+        !adminRow ||
+        !verifyPassword(password, adminRow.password_hash, adminRow.password_salt) ||
+        !verifyAdminSecurityCode(adminRow.id, admin_code)
+      ) {
         const attempts = recordFailedLoginAttempt(clientIp, cleanEmail);
         logAdminAction({
           adminUserId: adminRow?.id || 'anonymous',
           adminEmail: cleanEmail,
           action: 'LOGIN_FAILED',
           affectedRecordId: adminRow?.id || null,
-          details: `Muvaffaqiyatsiz kirish urinishi (#${attempts}).`,
+          details: `Muvaffaqiyatsiz administrator kirish urinishi (#${attempts}).`,
           metadata: { ip: clientIp, attempts },
         });
         return res.status(401).json({
@@ -528,7 +776,6 @@ export async function createApp() {
         });
       }
 
-      // Verify server-controlled authoritative app_metadata.role === 'admin'
       const appMetadata = parseAdminAppMetadata(adminRow.app_metadata_json);
       if (!appMetadata || appMetadata.role !== 'admin') {
         logAdminAction({
@@ -539,7 +786,7 @@ export async function createApp() {
           details: 'Foydalanuvchida server tomonidan tasdiqlangan admin roli mavjud emas.',
         });
         return res.status(403).json({
-          error: "Kirish rad etildi: Sizda administrator huquqi mavjud emas.",
+          error: 'Kirish rad etildi: Sizda administrator huquqi mavjud emas.',
         });
       }
 
@@ -573,7 +820,7 @@ export async function createApp() {
         adminEmail: adminRow.email,
         action: 'TIZIMGA_KIRISH',
         affectedRecordId: adminRow.id,
-        details: 'Administrator boshqaruv paneliga muvaffaqiyatli kirdi.',
+        details: 'Administrator kuchaytirilgan maxfiy kod orqali boshqaruv paneliga muvaffaqiyatli kirdi.',
         metadata: { ip: clientIp },
       });
 
@@ -583,9 +830,10 @@ export async function createApp() {
           id: adminRow.id,
           email: adminRow.email,
           full_name: adminRow.full_name,
-          role: adminRow.role,
+          role: 'admin',
           app_metadata: appMetadata,
           mfa_enabled: Boolean(adminRow.mfa_enabled),
+          access_code_configured: true,
           created_at: adminRow.created_at,
         },
       });
@@ -615,10 +863,14 @@ export async function createApp() {
     res.json({ admin: req.admin });
   });
 
-  // Strict schema for profile updates: blocks role / app_metadata / user_metadata tampering
   const profileUpdateSchema = z
     .object({
-      full_name: z.string().trim().min(3, "Ism-familiya kamida 3 ta belgidan iborat bo'lishi kerak.").max(100).optional(),
+      full_name: z
+        .string()
+        .trim()
+        .min(3, "Ism-familiya kamida 3 ta belgidan iborat bo'lishi kerak.")
+        .max(100)
+        .optional(),
       current_password: z.string().optional(),
       new_password: z.string().optional(),
     })
@@ -717,18 +969,113 @@ export async function createApp() {
           id: adminRow.id,
           email: adminRow.email,
           full_name: updatedName,
-          role: adminRow.role,
+          role: 'admin',
           app_metadata: parseAdminAppMetadata(adminRow.app_metadata_json) || {
             role: 'admin',
             provider: 'edupay_server_auth',
           },
           mfa_enabled: Boolean(adminRow.mfa_enabled),
+          access_code_configured: true,
           created_at: adminRow.created_at,
         },
       });
     } catch (error) {
       console.error('Error in PUT /api/auth/profile:', error);
       res.status(500).json({ error: 'Profilni yangilashda xatolik yuz berdi.' });
+    }
+  });
+
+  // --- ADMIN ACCESS CODES MANAGEMENT (STUDENT CODE & STRONG ADMIN SECURITY CODE) ---
+  const accessCodesUpdateSchema = z
+    .object({
+      student_access_code: z.string().trim().optional(),
+      current_password: z.string().optional(),
+      new_admin_code: z.string().trim().optional(),
+    })
+    .strict();
+
+  app.put('/api/admin/access-codes', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const parsed = accessCodesUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: parsed.error.issues[0]?.message || "Kirish kodlari ma'lumotlari noto'g'ri.",
+        });
+      }
+
+      const { student_access_code, current_password, new_admin_code } = parsed.data;
+      const adminId = req.admin!.id;
+      const adminRow = db.prepare(`SELECT * FROM admins WHERE id = ?`).get(adminId) as
+        | {
+            id: string;
+            email: string;
+            password_hash: string;
+            password_salt: string;
+          }
+        | undefined;
+
+      if (!adminRow) {
+        return res.status(404).json({ error: 'Administrator topilmadi.' });
+      }
+
+      let currentStudentCode = getStudentAccessCode();
+
+      // 1. Update Student Access Code if provided
+      if (typeof student_access_code === 'string' && student_access_code.trim().length > 0) {
+        const studentValidation = validateStudentAccessCode(student_access_code);
+        if (!studentValidation.valid) {
+          return res.status(400).json({ error: studentValidation.error });
+        }
+        // Prevent setting student code equal to the admin security code
+        if (verifyAdminSecurityCode(adminId, studentValidation.cleaned)) {
+          return res.status(400).json({
+            error:
+              "Xavfsizlik qoidasi: O'quvchi kirish kodi administrator maxfiy kodi bilan bir xil bo'lishi mumkin emas!",
+          });
+        }
+        currentStudentCode = updateStudentAccessCode(studentValidation.cleaned);
+        logAdminAction({
+          adminUserId: adminRow.id,
+          adminEmail: adminRow.email,
+          action: 'OQUVCHI_KODI_YANGILANDI',
+          affectedRecordId: 'access_control_config',
+          details: `O'quvchilar kirish kodi "${currentStudentCode}" ga yangilandi.`,
+        });
+      }
+
+      // 2. Update Strong Admin Security Code if provided
+      if (typeof new_admin_code === 'string' && new_admin_code.trim().length > 0) {
+        if (
+          !current_password ||
+          !verifyPassword(current_password, adminRow.password_hash, adminRow.password_salt)
+        ) {
+          return res.status(400).json({
+            error: "Administrator maxfiy kodini o'zgartirish uchun joriy parolni to'g'ri kiriting.",
+          });
+        }
+
+        const adminCodeValidation = validateStrongAdminCode(new_admin_code, currentStudentCode);
+        if (!adminCodeValidation.valid) {
+          return res.status(400).json({ error: adminCodeValidation.error });
+        }
+
+        updateAdminSecurityCode(adminId, adminCodeValidation.cleaned);
+        logAdminAction({
+          adminUserId: adminRow.id,
+          adminEmail: adminRow.email,
+          action: 'ADMIN_MAXFIY_KODI_YANGILANDI',
+          affectedRecordId: adminRow.id,
+          details: 'Administrator paneli uchun kuchaytirilgan maxfiy himoya kodi yangilandi.',
+        });
+      }
+
+      res.json({
+        success: true,
+        studentAccessCode: currentStudentCode,
+      });
+    } catch (error) {
+      console.error('Error in PUT /api/admin/access-codes:', error);
+      res.status(500).json({ error: 'Kirish kodlarini yangilashda xatolik yuz berdi.' });
     }
   });
 
@@ -801,6 +1148,7 @@ export async function createApp() {
     try {
       res.json({
         admin: req.admin,
+        studentAccessCode: getStudentAccessCode(),
         teachers: getAllTeachers(),
         groups: getAllGroups(),
         periods: getAllCollectionPeriods(),
@@ -816,7 +1164,11 @@ export async function createApp() {
 
   const teacherSchema = z
     .object({
-      full_name: z.string().trim().min(3, "O'qituvchi ism-familiyasi kamida 3 ta belgidan iborat bo'lishi kerak.").max(120),
+      full_name: z
+        .string()
+        .trim()
+        .min(3, "O'qituvchi ism-familiyasi kamida 3 ta belgidan iborat bo'lishi kerak.")
+        .max(120),
       subject: z.string().trim().max(120).optional(),
       phone: z.string().trim().max(40).optional(),
       status: z.enum(['active', 'inactive', 'archived']).optional(),
@@ -835,7 +1187,9 @@ export async function createApp() {
       const { full_name, subject, phone, status } = parsed.data;
       const cleanedName = cleanStudentName(full_name);
       if (cleanedName.length < 3) {
-        return res.status(400).json({ error: "O'qituvchi ism-familiyasi kamida 3 ta belgidan iborat bo'lishi kerak." });
+        return res
+          .status(400)
+          .json({ error: "O'qituvchi ism-familiyasi kamida 3 ta belgidan iborat bo'lishi kerak." });
       }
 
       const id = `tch-${crypto.randomUUID()}`;
@@ -1144,6 +1498,12 @@ export async function createApp() {
       const monthName = UZBEK_MONTHS[mNum - 1];
       const title = `${monthName} ${yr}`;
 
+      if (start_date > closing_date) {
+        return res.status(400).json({
+          error: "Qabul boshlanish sanasi qabul yopilish sanasidan keyin bo'lishi mumkin emas.",
+        });
+      }
+
       if (allowed_payment_start_date > allowed_payment_end_date) {
         return res.status(400).json({
           error: "Ruxsat etilgan to'lov boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas.",
@@ -1197,6 +1557,8 @@ export async function createApp() {
 
   const periodUpdateSchema = z
     .object({
+      month_number: z.coerce.number().int().min(1).max(12).optional(),
+      year: z.coerce.number().int().min(2020).max(2100).optional(),
       start_date: z.string().trim().min(8).max(20).optional(),
       closing_date: z.string().trim().min(8).max(20).optional(),
       allowed_payment_start_date: z.string().trim().min(8).max(20).optional(),
@@ -1225,6 +1587,12 @@ export async function createApp() {
       const allowedStart = parsed.data.allowed_payment_start_date || existing.allowed_payment_start_date;
       const allowedEnd = parsed.data.allowed_payment_end_date || existing.allowed_payment_end_date;
       const status = parsed.data.status || existing.status;
+
+      if (startDate > closingDate) {
+        return res.status(400).json({
+          error: "Qabul boshlanish sanasi qabul yopilish sanasidan keyin bo'lishi mumkin emas.",
+        });
+      }
 
       if (allowedStart > allowedEnd) {
         return res.status(400).json({
@@ -1370,10 +1738,13 @@ export async function createApp() {
 
   const adminSubmissionUpdateSchema = z
     .object({
+      collection_period_id: z.string().trim().min(1).max(100).optional(),
+      teacher_id: z.string().trim().max(100).optional(),
       student_full_name: z.string().trim().min(1).max(120).optional(),
       payment_date: z.string().trim().min(8).max(20).optional(),
       group_id: z.string().trim().min(1).max(100).optional(),
       note: z.string().trim().max(300).optional(),
+      allow_duplicate: z.boolean().optional(),
     })
     .strict();
 
@@ -1411,6 +1782,21 @@ export async function createApp() {
         return res.status(400).json({ error: 'Tanlangan guruh topilmadi.' });
       }
 
+      const normalizedName = normalizeStudentName(nameValidation.cleaned);
+      if (!parsed.data.allow_duplicate) {
+        const dup = db
+          .prepare(
+            `SELECT id FROM submissions WHERE collection_period_id = ? AND group_id = ? AND normalized_student_name = ? AND id != ? LIMIT 1`
+          )
+          .get(existing.collection_period_id, group.id, normalizedName, id);
+        if (dup) {
+          return res.status(409).json({
+            code: 'DUPLICATE_SUBMISSION',
+            error: "Ushbu guruhda bu ism-familiyali boshqa o'quvchi yozuvi allaqachon mavjud.",
+          });
+        }
+      }
+
       const teacherId = group.teacher_id;
       const note = typeof parsed.data.note === 'string' ? parsed.data.note.trim() : existing.note || '';
       const nowIso = new Date().toISOString();
@@ -1422,7 +1808,7 @@ export async function createApp() {
         WHERE id = ?
       `).run(
         nameValidation.cleaned,
-        normalizeStudentName(nameValidation.cleaned),
+        normalizedName,
         paymentDate,
         group.id,
         teacherId,

@@ -1,7 +1,8 @@
 /**
  * Pure domain logic for EduPay Manager:
  * - Uzbek name cleaning, normalization, validation, and alphabetical sorting
- * - Payment date validation and DD.MM.YYYY formatting
+ * - Payment date validation, collection window validation, and DD.MM.YYYY formatting
+ * - Student access code vs. Strong Admin security code validation
  * - Roster vs. submissions comparison
  * - Payment date distribution aggregation
  */
@@ -60,7 +61,7 @@ export function validateStudentName(raw: string): {
   if (!cleaned) {
     return {
       valid: false,
-      error: "Iltimos, ism va familiyangizni kiriting.",
+      error: 'Iltimos, ism va familiyangizni kiriting.',
       cleaned,
     };
   }
@@ -76,7 +77,7 @@ export function validateStudentName(raw: string): {
   if (cleaned.length > 100) {
     return {
       valid: false,
-      error: "Ism va familiya 100 ta belgidan oshmasligi kerak.",
+      error: 'Ism va familiya 100 ta belgidan oshmasligi kerak.',
       cleaned,
     };
   }
@@ -114,12 +115,108 @@ export function validateStudentName(raw: string): {
 }
 
 /**
+ * Validates a Student Access Code (O'quvchi kirish kodi).
+ * Must be 4..32 characters of letters, numbers, or hyphens.
+ */
+export function validateStudentAccessCode(raw: string): {
+  valid: boolean;
+  error?: string;
+  cleaned: string;
+} {
+  const cleaned = (raw || '').trim().toUpperCase();
+  if (cleaned.length < 4 || cleaned.length > 32) {
+    return {
+      valid: false,
+      error: "O'quvchi kirish kodi 4 tadan 32 tagacha belgidan iborat bo'lishi kerak.",
+      cleaned,
+    };
+  }
+  if (!/^[A-Z0-9\-_]+$/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "O'quvchi kirish kodida faqat lotin harflari, raqamlar va tire (-) bo'lishi mumkin.",
+      cleaned,
+    };
+  }
+  return { valid: true, cleaned };
+}
+
+/**
+ * Validates a Strong Administrator Security Code (Maxfiy Administrator Himoya Kodi).
+ * Must be at least 10 characters, include uppercase, lowercase, digit, and special character,
+ * and MUST NOT match or contain the Student Access Code.
+ */
+export function validateStrongAdminCode(
+  rawAdminCode: string,
+  currentStudentCode?: string
+): {
+  valid: boolean;
+  error?: string;
+  cleaned: string;
+} {
+  const cleaned = (rawAdminCode || '').trim();
+  if (cleaned.length < 10) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodi kamida 10 ta belgidan iborat bo'lishi shart.",
+      cleaned,
+    };
+  }
+  if (cleaned.length > 128) {
+    return {
+      valid: false,
+      error: 'Administrator maxfiy kodi 128 ta belgidan oshmasligi kerak.',
+      cleaned,
+    };
+  }
+  if (!/[A-Z]/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodida kamida bitta bosh harf (A-Z) bo'lishi shart.",
+      cleaned,
+    };
+  }
+  if (!/[a-z]/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodida kamida bitta kichik harf (a-z) bo'lishi shart.",
+      cleaned,
+    };
+  }
+  if (!/[0-9]/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodida kamida bitta raqam (0-9) bo'lishi shart.",
+      cleaned,
+    };
+  }
+  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?~`]/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodida kamida bitta maxsus belgi (!@#$%^&* va h.k.) bo'lishi shart.",
+      cleaned,
+    };
+  }
+  if (currentStudentCode) {
+    const normAdmin = cleaned.toLowerCase();
+    const normStudent = currentStudentCode.trim().toLowerCase();
+    if (normStudent && (normAdmin === normStudent || normAdmin.includes(normStudent))) {
+      return {
+        valid: false,
+        error: "Xavfsizlik qoidasi: Administrator maxfiy kodi o'quvchi kirish kodi bilan bir xil bo'lishi yoki uni o'z ichiga olishi qat'iyan man etiladi!",
+        cleaned,
+      };
+    }
+  }
+  return { valid: true, cleaned };
+}
+
+/**
  * Maps Uzbek Latin letters and digraphs (o', g', sh, ch, ng) to sortable weights
  * so alphabetical ordering is consistent, case-insensitive, and locale-aware.
  */
 function uzbekSortKey(str: string): string {
   const s = normalizeStudentName(str);
-  // Replace digraphs and o'/g' with ordered tokens after base letters
   return s
     .replace(/o'/g, 'o\uFFFF1')
     .replace(/g'/g, 'g\uFFFF1')
@@ -165,6 +262,33 @@ export function formatDateTimeUz(isoDateTime: string): string {
 }
 
 /**
+ * Validates whether a collection period is open on a given YYYY-MM-DD reference date.
+ */
+export function validateCollectionPeriodWindow(
+  startDate: string,
+  closingDate: string,
+  referenceIsoDate?: string
+): { valid: boolean; error?: string } {
+  const today =
+    referenceIsoDate ||
+    new Date().toISOString().slice(0, 10);
+
+  if (startDate && today < startDate) {
+    return {
+      valid: false,
+      error: `Oylik to'lov muddatlarini qabul qilish ${formatDateUz(startDate)} sanasidan boshlanadi.`,
+    };
+  }
+  if (closingDate && today > closingDate) {
+    return {
+      valid: false,
+      error: `Ushbu oy uchun to'lov muddatlarini qabul qilish ${formatDateUz(closingDate)} sanasida yakunlangan.`,
+    };
+  }
+  return { valid: true };
+}
+
+/**
  * Validates that a payment date is in YYYY-MM-DD format and within the collection period's allowed range.
  */
 export function validatePaymentDate(
@@ -188,7 +312,7 @@ export function validatePaymentDate(
     dateObj.getUTCMonth() + 1 !== m ||
     dateObj.getUTCDate() !== d
   ) {
-    return { valid: false, error: "Bunday sana mavjud emas." };
+    return { valid: false, error: 'Bunday sana mavjud emas.' };
   }
 
   if (allowedStartDate && trimmed < allowedStartDate) {
@@ -315,10 +439,11 @@ export function computePaymentDateDistribution<
  * Generates safe Excel worksheet names (max 31 chars, no forbidden characters: \ / ? * : [ ]).
  */
 export function sanitizeExcelSheetName(name: string, usedNames: Set<string>): string {
-  const base = name
-    .replace(/[\\/?*:[\]]/g, '_')
-    .trim()
-    .slice(0, 28) || 'Guruh';
+  const base =
+    name
+      .replace(/[\\/?*:[\]]/g, '_')
+      .trim()
+      .slice(0, 28) || 'Guruh';
 
   let candidate = base;
   let counter = 2;

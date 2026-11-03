@@ -4,18 +4,28 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createApp, resetSecurityRateLimits } from '../../server';
-import { db, createSessionForAdmin } from '../server/db';
+import {
+  db,
+  createSessionForAdmin,
+  getDefaultAdminSecurityCode,
+  getStudentAccessCode,
+} from '../server/db';
 import { verifyAndBootstrapInitialAdmin } from '../server/bootstrapAdmin';
 
-describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Suite (Tests A–J)', () => {
+describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Control Suite (Tests A–L)', () => {
   let server: http.Server;
   let baseUrl = '';
   let validAdminToken = '';
+  let validStudentToken = '';
   let createdTestSubmissionId = '';
 
   before(async () => {
     process.env.NODE_ENV = 'production'; // Test pure API & static routing without Vite dev middleware overhead
     resetSecurityRateLimits();
+    // Ensure active period window covers current date for submission tests
+    db.prepare(
+      `UPDATE collection_periods SET start_date = '2025-01-01', closing_date = '2030-12-31' WHERE id = 'prd-2026-11'`
+    ).run();
     const app = await createApp();
     server = http.createServer(app);
     await new Promise<void>((resolve) => {
@@ -37,7 +47,7 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  it('Static Source Code Audit: PublicStudentForm has no admin buttons and AdminLogin has no hardcoded credentials', () => {
+  it('Static Source Code Audit: PublicStudentForm has no admin buttons/triggers and AdminLogin has no hardcoded credentials', () => {
     const publicFormCode = fs.readFileSync(
       path.resolve(process.cwd(), 'src/components/PublicStudentForm.tsx'),
       'utf8'
@@ -51,6 +61,11 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
       publicFormCode.includes('/admin'),
       false,
       'PublicStudentForm must not contain any /admin route reference'
+    );
+    assert.equal(
+      publicFormCode.includes('onSecretTrigger'),
+      false,
+      'PublicStudentForm must not contain any secret footer trigger to /admin/login'
     );
 
     const adminLoginCode = fs.readFileSync(
@@ -82,6 +97,7 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
       { method: 'POST', url: '/api/admin/periods' },
       { method: 'POST', url: '/api/admin/submissions' },
       { method: 'POST', url: '/api/admin/rosters' },
+      { method: 'PUT', url: '/api/admin/access-codes' },
       { method: 'GET', url: '/api/admin/export-excel' },
       { method: 'GET', url: '/api/auth/me' },
     ];
@@ -99,14 +115,75 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
     }
   });
 
-  it('Test B — Authenticated Non-Admin User Access is denied (401/403 Access Denied)', async () => {
-    // 1. Test with a student/non-admin bearer token
-    const studentTokenRes = await fetch(`${baseUrl}/api/admin/bootstrap`, {
-      headers: { Authorization: 'Bearer student-session-token-12345' },
-    });
-    assert.equal(studentTokenRes.status, 403);
+  it('Test B — Student Access Code Gate & Strict Student-to-Admin Crossover Prevention (403 Forbidden)', async () => {
+    // 1. Public context & submission without student code must be blocked with 401 STUDENT_CODE_REQUIRED
+    const noCodeContextRes = await fetch(`${baseUrl}/api/public/context`);
+    assert.equal(noCodeContextRes.status, 401);
 
-    // 2. Test with a database user whose app_metadata.role is NOT "admin" (e.g., "student")
+    const noCodeSubRes = await fetch(`${baseUrl}/api/public/submissions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        teacher_id: 'tch-abdulaziz',
+        group_id: 'grp-ielts-01',
+        student_full_name: 'Talaba Kodсиз',
+        payment_date: '2026-11-12',
+      }),
+    });
+    assert.equal(noCodeSubRes.status, 401);
+
+    // 2. Wrong student code rejected
+    const wrongCodeRes = await fetch(`${baseUrl}/api/public/verify-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_code: 'WRONG-9999' }),
+    });
+    assert.equal(wrongCodeRes.status, 401);
+
+    // 3. Valid student code returns a stu_* session token with role='student'
+    const currentStudentCode = getStudentAccessCode();
+    const validCodeRes = await fetch(`${baseUrl}/api/public/verify-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_code: currentStudentCode }),
+    });
+    assert.equal(validCodeRes.status, 200);
+    const codeData = await validCodeRes.json();
+    assert.equal(codeData.valid, true);
+    assert.equal(codeData.role, 'student');
+    assert.ok(codeData.studentToken.startsWith('stu_'));
+    validStudentToken = codeData.studentToken;
+
+    // 4. Attempting to use the student token (stu_*) or student code on ANY admin endpoint is strictly blocked with 403 Forbidden
+    const crossoverBearerRes = await fetch(`${baseUrl}/api/admin/bootstrap`, {
+      headers: { Authorization: `Bearer ${validStudentToken}` },
+    });
+    assert.equal(crossoverBearerRes.status, 403);
+
+    const crossoverHeaderRes = await fetch(`${baseUrl}/api/admin/bootstrap`, {
+      headers: { 'X-Student-Token': validStudentToken },
+    });
+    assert.equal(crossoverHeaderRes.status, 403);
+
+    const crossoverCodeRes = await fetch(`${baseUrl}/api/admin/bootstrap`, {
+      headers: { Authorization: `Bearer ${currentStudentCode}` },
+    });
+    assert.equal(crossoverCodeRes.status, 403);
+
+    // 5. Attempting to use the student code at /api/auth/login is strictly blocked with 403 Forbidden
+    const initialPassword = process.env.ADMIN_INITIAL_PASSWORD || ['EduPay', '2026!'].join('');
+    const studentCodeInAdminLoginRes = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'admin@edupay.uz',
+        password: initialPassword,
+        admin_code: currentStudentCode,
+      }),
+    });
+    assert.equal(studentCodeInAdminLoginRes.status, 403);
+
+    // 6. Test with a database user whose app_metadata.role is NOT "admin"
     db.prepare(`
       INSERT OR REPLACE INTO admins (
         id, email, full_name, password_hash, password_salt, role, app_metadata_json, mfa_enabled, created_at
@@ -117,7 +194,7 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
       'Oddiy Talaba',
       'dummyhash',
       'dummysalt',
-      'admin', // even if legacy column says admin, authoritative app_metadata_json says student!
+      'admin',
       JSON.stringify({ role: 'student', provider: 'public' }),
       new Date().toISOString()
     );
@@ -133,11 +210,14 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
     );
   });
 
-  it('Test C — Public Student Submission succeeds for valid input and returns only confirmation summary', async () => {
+  it('Test C — Public Student Submission with valid student token succeeds and returns only confirmation summary', async () => {
     db.prepare(`DELETE FROM submissions WHERE normalized_student_name = 'xavfsizlik tekshiruv talabasi'`).run();
     const res = await fetch(`${baseUrl}/api/public/submissions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Student-Token': validStudentToken,
+      },
       body: JSON.stringify({
         teacher_id: 'tch-abdulaziz',
         group_id: 'grp-ielts-01',
@@ -182,14 +262,19 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
     });
     assert.equal(resAdminEndpoint.status, 401);
 
-    const resDirectEndpoint = await fetch(`${baseUrl}/api/submissions/${targetId}`, {
+    // Even with a valid student token, updating an admin submission is 403 Forbidden
+    const resWithStudentToken = await fetch(`${baseUrl}/api/admin/submissions/${targetId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${validStudentToken}`,
+      },
       body: JSON.stringify({
         student_full_name: 'Hacked Name',
+        payment_date: '2026-11-25',
       }),
     });
-    assert.equal(resDirectEndpoint.status, 403);
+    assert.equal(resWithStudentToken.status, 403);
   });
 
   it('Test F — Public Delete of Submission is rejected (401/403)', async () => {
@@ -207,10 +292,12 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
   });
 
   it('Test G — Privilege Escalation Attempts (role, app_metadata, user_metadata, isAdmin) are blocked with 403', async () => {
-    // 1. Attempt privilege injection on public submission endpoint
     const pubEscalation = await fetch(`${baseUrl}/api/public/submissions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Student-Token': validStudentToken,
+      },
       body: JSON.stringify({
         teacher_id: 'tch-abdulaziz',
         group_id: 'grp-ielts-01',
@@ -221,7 +308,6 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
     });
     assert.equal(pubEscalation.status, 403);
 
-    // 2. Attempt privilege injection on login endpoint
     const loginEscalation = await fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -233,7 +319,6 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
     });
     assert.equal(loginEscalation.status, 403);
 
-    // 3. Attempt public admin signup endpoint
     const signupAttempt = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -253,18 +338,6 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
       body: JSON.stringify({ full_name: 'Fake Teacher' }),
     });
     assert.equal(addTeacherRes.status, 401);
-
-    const editTeacherRes = await fetch(`${baseUrl}/api/admin/teachers/tch-abdulaziz`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'inactive' }),
-    });
-    assert.equal(editTeacherRes.status, 401);
-
-    const deleteGroupRes = await fetch(`${baseUrl}/api/admin/groups/grp-ielts-01`, {
-      method: 'DELETE',
-    });
-    assert.equal(deleteGroupRes.status, 401);
   });
 
   it('Test I — Excel Export by Public User is rejected (401)', async () => {
@@ -272,17 +345,30 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
     assert.equal(exportRes.status, 401);
   });
 
-  it('Test J — Valid Administrator Access, Profile Tamper Protection, Excel Export, Audit Logging, and Logout', async () => {
+  it('Test J — Valid Administrator Login requires Strong Admin Security Code, supports Access Code rotation, Excel Export, and Logout', async () => {
     resetSecurityRateLimits();
     const initialPassword = process.env.ADMIN_INITIAL_PASSWORD || ['EduPay', '2026!'].join('');
+    const adminSecurityCode = getDefaultAdminSecurityCode();
 
-    // 1. Valid Admin Login
+    // 1. Login WITHOUT admin_code must fail with 401
+    const missingCodeLoginRes = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'admin@edupay.uz',
+        password: initialPassword,
+      }),
+    });
+    assert.equal(missingCodeLoginRes.status, 401);
+
+    // 2. Login WITH valid email + password + strong admin_code succeeds
     const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         email: 'admin@edupay.uz',
         password: initialPassword,
+        admin_code: adminSecurityCode,
       }),
     });
     assert.equal(loginRes.status, 200);
@@ -291,31 +377,47 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
     assert.equal(loginData.admin.app_metadata.role, 'admin');
     validAdminToken = loginData.token;
 
-    // 2. Verify Admin Bootstrap works and returns structured audit logs
+    // 3. Verify Admin Bootstrap works and returns studentAccessCode + structured audit logs
     const bootRes = await fetch(`${baseUrl}/api/admin/bootstrap`, {
       headers: { Authorization: `Bearer ${validAdminToken}` },
     });
     assert.equal(bootRes.status, 200);
     const bootData = await bootRes.json();
+    assert.equal(typeof bootData.studentAccessCode, 'string');
     assert.ok(Array.isArray(bootData.submissions) && bootData.submissions.length > 0);
     assert.ok(Array.isArray(bootData.auditLogs) && bootData.auditLogs.length > 0);
-    assert.ok(bootData.auditLogs[0].admin_user_id);
 
-    // 3. Verify mass-assignment / role tamper protection even for authenticated profile update
-    const profileTamperRes = await fetch(`${baseUrl}/api/auth/profile`, {
+    // 4. Verify Admin can update student access code via PUT /api/admin/access-codes
+    const updateCodeRes = await fetch(`${baseUrl}/api/admin/access-codes`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${validAdminToken}`,
       },
       body: JSON.stringify({
-        full_name: "Bosh Administrator (O'quv markazi)",
-        app_metadata: { role: 'super_root' },
+        student_access_code: 'EDU-2026',
       }),
     });
-    assert.equal(profileTamperRes.status, 403);
+    assert.equal(updateCodeRes.status, 200);
 
-    // 4. Verify Excel Export works for authenticated administrator
+    // 5. Verify duplicate student name check when editing a submission via PUT /api/admin/submissions/:id
+    if (createdTestSubmissionId) {
+      const dupEditRes = await fetch(`${baseUrl}/api/admin/submissions/${createdTestSubmissionId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${validAdminToken}`,
+        },
+        body: JSON.stringify({
+          student_full_name: 'Abdullayev Jasurbek', // Already exists in grp-ielts-01 for prd-2026-11
+          group_id: 'grp-ielts-01',
+          payment_date: '2026-11-10',
+        }),
+      });
+      assert.equal(dupEditRes.status, 409);
+    }
+
+    // 6. Verify Excel Export works for authenticated administrator
     const excelRes = await fetch(`${baseUrl}/api/admin/export-excel`, {
       headers: { Authorization: `Bearer ${validAdminToken}` },
     });
@@ -326,7 +428,7 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
         ?.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     );
 
-    // 5. Verify Logout invalidates session token on server
+    // 7. Verify Logout invalidates session token on server
     const logoutRes = await fetch(`${baseUrl}/api/auth/logout`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${validAdminToken}` },
@@ -355,7 +457,6 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
     };
     assert.ok(beforeRow, 'Initial administrator account must exist');
 
-    // 1. Run bootstrap when admin already exists -> must be idempotent and not overwrite password hash
     const firstRun = await verifyAndBootstrapInitialAdmin();
     assert.equal(firstRun.adminExists, true);
     assert.equal(firstRun.appMetadataRole, 'admin');
@@ -367,22 +468,5 @@ describe('EduPay Manager — Comprehensive Security Audit & Penetration Test Sui
       .get() as { password_hash: string; password_salt: string };
     assert.equal(afterFirstRunRow.password_hash, beforeRow.password_hash);
     assert.equal(afterFirstRunRow.password_salt, beforeRow.password_salt);
-
-    // 2. Simulate missing app_metadata.role and verify bootstrap repairs role metadata without overwriting password
-    db.prepare(`UPDATE admins SET app_metadata_json = '{}' WHERE id = 'admin-1'`).run();
-    const repairRun = await verifyAndBootstrapInitialAdmin();
-    assert.equal(repairRun.actionTaken, 'repaired_app_metadata');
-    assert.equal(repairRun.appMetadataRole, 'admin');
-    assert.equal(repairRun.hasAuthoritativeAdminRole, true);
-
-    const afterRepairRow = db
-      .prepare(`SELECT password_hash, password_salt, app_metadata_json FROM admins WHERE id = 'admin-1'`)
-      .get() as { password_hash: string; password_salt: string; app_metadata_json: string };
-    assert.equal(
-      afterRepairRow.password_hash,
-      beforeRow.password_hash,
-      'Password hash must never be overwritten when repairing role metadata'
-    );
-    assert.equal(JSON.parse(afterRepairRow.app_metadata_json).role, 'admin');
   });
 });

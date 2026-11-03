@@ -1,80 +1,44 @@
-# EDUPAY MANAGER — XAVFSIZLIK AUDITI VA KIRISH NAZORATI HISOBOTI (SECURITY REPORT)
+# EDUPAY MANAGER — XAVFSIZLIK AUDITI VA IKKI DARAJALI KIRISH NAZORATI HISOBOTI (SECURITY REPORT)
 
-## 1. ANIQLANGAN ZAIFLIKLAR (VULNERABILITIES IDENTIFIED)
+## 1. ANIQLANGAN VA BARTARAF ETILGAN XATOLIKLAR HAMDA ZAIFLIKLAR
 
-Dastlabki kod bazasini xavfsizlik tekshiruvidan (penetration audit) o'tkazish davomida quyidagi zaifliklar aniqlandi va to'liq bartaraf etildi:
+Kod bazasini to'liq auditdan o'tkazish davomida quyidagi barcha texnik va xavfsizlik xatoliklari aniqlandi hamda to'liq bartaraf etildi:
 
-1. **Ommaviy talaba sahifasida administrator tugmasining ko'rinishi (`src/components/PublicStudentForm.tsx`)**:
-   - **Muammo:** Ommaviy `/` sahifasining yuqori qismida `"Administrator paneli"` tugmasi mavjud bo'lib, oddiy o'quvchilarga boshqaruv tizimi manzilini oshkor qilayotgan edi.
-   - **Yechim:** `PublicStudentForm.tsx` faylidan `onOpenAdmin` xususiyati va `"Administrator paneli"` tugmasi butunlay olib tashlandi.
-2. **Frontend kodida oldindan to'ldirilgan (hardcoded) login va parol (`src/components/AdminLogin.tsx`)**:
-   - **Muammo:** `AdminLogin.tsx` faylida `useState('admin@edupay.uz')` va `useState('EduPay2026!')` standart qiymat sifatida yozilgan hamda login formasi ostida ochiq matnda ko'rsatilgan edi.
-   - **Yechim:** Oldindan to'ldirilgan login/parol va pastki qismdagi parol ko'rsatmasi butunlay o'chirildi.
-3. **`.env.example` faylida haqiqiy parolning ochiq ko'rsatilishi**:
-   - **Muammo:** `.env.example` faylida `ADMIN_INITIAL_PASSWORD="EduPay2026!"` ko'rinishida haqiqiy boshlang'ich parol saqlangan edi.
-   - **Yechim:** `.env.example` fayli tozalanib, ommaviy (`VITE_*`) va faqat serverda ishlatiladigan (`SUPABASE_SERVICE_ROLE_KEY`, `ADMIN_INITIAL_PASSWORD`, `SESSION_SECRET`) o'zgaruvchilar xavfsiz namuna qiymatlar (`CHANGE_ME_...`) bilan ajratildi.
-4. **Himoyalangan ichki marshrutlarning (`/admin/*`) URL darajasida qat'iy ajratilmaganligi (`src/App.tsx`, `src/components/AdminDashboardShell.tsx`)**:
-   - **Muammo:** `/admin/students`, `/admin/teachers`, `/admin/groups`, `/admin/collections`, `/admin/reports`, `/admin/settings` manzillariga to'g'ridan-to'g'ri URL orqali kirishda alohida marshrut himoyasi (route guard) yo'q edi.
-   - **Yechim:** Barcha `/admin*` manzillari uchun qat'iy marshrut himoyasi o'rnatildi. Tizimga kirmagan foydalanuvchi `/admin/*` manziliga kirsa, maxfiy ma'lumotlar yuklanmasdan `/admin/login` sahifasiga yo'naltiriladi.
-5. **Mass-Assignment va Huquqni Oshirish (Privilege Escalation) himoyasining yetishmasligi (`server.ts`)**:
-   - **Muammo:** API so'rovlarida kutilmagan maydonlar (`role`, `app_metadata`, `user_metadata`, `isAdmin`) qat'iy rad etilmagan edi.
-   - **Yechim:** Barcha POST/PUT endpointlariga Zod `.strict()` sxemalari va maxsus `containsPrivilegeEscalationAttempt` filtri o'rnatildi (`403 Forbidden` + Audit Log).
-6. **Login Brute-Force himoyasi va tizimli Audit Log ustunlarining yetishmasligi (`src/server/db.ts`, `server.ts`)**:
-   - **Muammo:** `POST /api/auth/login` manzilida ketma-ket noto'g'ri parol terishga cheklov yo'q edi va `audit_logs` jadvalida `admin_user_id` hamda `affected_record_id` ustunlari mavjud emas edi.
-   - **Yechim:** 5 marta muvaffaqiyatsiz urinishdan so'ng 15 daqiqalik bloklash, umumiy xatolik xabari (`"Elektron pochta yoki parol noto'g'ri."`), ixtiyoriy TOTP 2FA va to'liq tarkibli `audit_logs` tizimi joriy etildi.
-
----
-
-## 2. AMALGA OSHIRILGAN XAVFSIZLIK QATLAMLARI (SECURITY FIXES IMPLEMENTED)
-
-1. **1-Qatlam (Ommaviy Interfeys Izolyatsiyasi):** `/` sahifasida faqat o'quvchi to'lov sanasini yuborish formasi mavjud. Hech qanday admin havolasi, yashirin menyu yoki parol ko'rsatmasi yo'q.
-2. **2-Qatlam (URL Marshrut Himoyasi — Route Guards):** `/admin`, `/admin/students`, `/admin/teachers`, `/admin/groups`, `/admin/collections`, `/admin/reports`, `/admin/settings` marshrutlari faqat server tomonidan tasdiqlangan sessiya va `app_metadata.role === "admin"` huquqiga ega administratorlar uchun ochiladi.
-3. **3-Qatlam (Server tomonidan boshqariladigan `app_metadata.role = "admin"`):** Foydalanuvchi roli hech qachon `localStorage` yoki `user_metadata` dan olinmaydi. Server faqat `admins.app_metadata_json` (yoki Supabase JWT `app_metadata.role = 'admin'`) qiymatini tekshiradi.
-4. **4-Qatlam (API Validatsiyasi va Mass-Assignment Himoyasi):** Har bir API so'rovi Zod `.strict()` orqali tekshiriladi. Ruxsat etilmagan maydonlar (`role`, `isAdmin`, `app_metadata`, `user_metadata`) `403 Forbidden` bilan rad etiladi va `audit_logs` ga yoziladi.
-5. **5-Qatlam (To'g'ridan-to'g'ri Jadval So'rovlarini Bloklash va Supabase Edge Function):** `/rest/v1/*`, `/api/submissions*`, `/api/teachers*` kabi to'g'ridan-to'g'ri jadval manzillariga murojaatlar `403 Forbidden` bilan bloklanadi. Supabase uchun `supabase/functions/submit-payment/index.ts` server funksiyasi yaratildi.
+1. **O'quvchi va Administrator uchun Ikki Darajali Kod Orqali Kirish Tizimi (`server.ts`, `src/server/db.ts`, `src/components/PublicStudentForm.tsx`, `src/components/AdminLogin.tsx`, `src/components/SettingsView.tsx`)**:
+   - **Yechim:**
+     - **O'quvchi kirish kodi (`student_access_code`, standart: `EDU-2026`):** O'quvchilar `/` sahifasidagi to'lov muddatini yuborish shakliga kirish uchun maxsus o'quvchi kodini kiritadilar (`POST /api/public/verify-code`). Kod tasdiqlangach, faqat `stu_` prefiksli va `role = 'student'` huquqiga ega cheklangan sessiya tokeni beriladi.
+     - **O'quvchining Admin panelga o'tishini qat'iy bloklash:** Agar foydalanuvchi `stu_*` tokeni yoki o'quvchi kodi bilan `/api/admin/*` yoki `/api/auth/login` manziliga murojaat qilsa, server darhol **`403 Forbidden`** qaytaradi va `audit_logs` jadvaliga `STUDENT_ADMIN_CROSSOVER_BLOCKED` / `STUDENT_CODE_REJECTED_AT_ADMIN_LOGIN` hodisasini yozadi.
+     - **Kuchaytirilgan Administrator Maxfiy Kodi (`admin_code`, standart: `ADM#EduPay$2026!Key`):** Administrator `/admin/login` sahifasida elektron pochta va paroldan tashqari kamida 10 ta belgidan iborat (katta va kichik harf, raqam hamda maxsus belgi qatnashgan va o'quvchi kodidan keskin farq qiluvchi) **Maxfiy Administrator Himoya Kodi**ni kiritishi shart.
+2. **Ommaviy sahifa footer qismidagi yashirin `/admin/login` o'tish tugmalari (`src/App.tsx`, `src/components/PublicStudentForm.tsx`)**:
+   - **Muammo:** `PublicStudentForm.tsx` footer qismidagi ikkita yozuv (`"Ma'lumotlar xavfsiz himoyalangan"` va `"EduPay Manager ©"`) bosilganda o'quvchini `/admin/login` sahifasiga olib o'tardi (`onSecretTrigger`).
+   - **Yechim:** Footer qismidagi yashirin tugmalar oddiy bosilmaydigan matnga (`<div>`) aylantirildi va `onSecretTrigger` butunlay olib tashlandi.
+3. **2FA (TOTP) Base32 dekodlash xatoligi (`src/server/db.ts`)**:
+   - **Muammo:** `decodeBase32()` funksiyasi RFC 4648 standarti bo'yicha har bir Base32 belgisini 5-bitli oqim sifatida emas, balki `Buffer.from(..., 'utf8')` orqali baytlarga o'girgan edi. Natijada Google Authenticator / Authy ilovalari hosil qilgan 6 xonali kod server kodi bilan mos kelmasdi.
+   - **Yechim:** RFC 4648 5-bitli Base32 dekodlash algoritmi (`decodeBase32`) to'liq va aniq yozildi.
+4. **Soxta QR Kod o'rniga haqiqiy ISO/IEC 18004 QR Kod generatori (`src/utils/qrCode.ts`, `src/components/TelegramShareModal.tsx`)**:
+   - **Muammo:** `TelegramShareModal.tsx` ichidagi `buildDeterministicQrMatrix` funksiyasi Reed-Solomon xato tuzatish bitlarisiz tasodifiy kataklar chizgani sababli telefon kameralari uni skanerlay olmasdi.
+   - **Yechim:** Galois maydoni $GF(2^8)$ Reed-Solomon xato tuzatish bloklari, Byte mode kodlash, Finder/Alignment/Timing naqshlari va BCH format bitlariga ega haqiqiy skanerlanadigan ISO/IEC 18004 QR kod generatori (`generateQrCodeMatrix`) yaratildi.
+5. **Yig'im davrining ochiqlik va yopilish sanalari (`start_date` va `closing_date`) tekshiruvi (`server.ts`, `src/utils/edupayLogic.ts`)**:
+   - **Muammo:** `POST /api/public/submissions` faqat `status === 'active'` ni tekshirib, `start_date` va `closing_date` muddat oynasini tekshirmas edi.
+   - **Yechim:** `validateCollectionPeriodWindow(activePeriod.start_date, activePeriod.closing_date)` tekshiruvi qo'shildi.
+6. **Admin tomonidan yozuvni tahrirlashda takroriy o'quvchi ismini tekshirish (`server.ts`)**:
+   - **Muammo:** `PUT /api/admin/submissions/:id` endpointida tahrirlangan ism-familiya shu guruh va davrda boshqa o'quvchi bilan ustma-ust tushishi tekshirilmagan edi.
+   - **Yechim:** `id != ?` sharti bilan `normalized_student_name` bo'yicha dublikat tekshiruvi (`409 Conflict`) qo'shildi.
+7. **Reverse Proxy ortida IP Rate-Limit va xotira tozalanishi (`server.ts`)**:
+   - **Muammo:** `app.set('trust proxy', 1)` yoqilmaganligi sababli barcha foydalanuvchilar bitta IP sifatida ko'rilishi va `Map` xotirasi tozalanmasligi mumkin edi.
+   - **Yechim:** `app.set('trust proxy', 1)` va `pruneExpiredRateLimits()` xotira tozalash mexanizmi qo'shildi.
+8. **Excel eksportlarini Audit Log'da qayd etish va repo konfiguratsiyasini tozalash (`DashboardOverview.tsx`, `ReportsAndExportView.tsx`, `.gitignore`, `package.json`)**:
+   - **Yechim:** Excel yuklab olinganda `/api/admin/export-excel` orqali `EXCEL_YUKLAB_OLINDI` hodisasi `audit_logs` ga yoziladigan qilindi; `.gitignore` ga `data/*.sqlite*` qo'shildi; `package.json` dan ishlatilmayotgan paketlar tozalanib `"test"` skripti qo'shildi.
 
 ---
 
-## 3. MA'LUMOTLAR BAZASI RLS SIYOSATLARI (DATABASE RLS POLICIES)
+## 2. XAVFSIZLIK TESTLARI NATIJALARI (SECURITY TEST RESULTS: TESTS A–K)
 
-`supabase/migrations/002_security_hardening_rls.sql` faylida barcha jadvallar uchun `ENABLE ROW LEVEL SECURITY` va `FORCE ROW LEVEL SECURITY` yoqildi hamda `PUBLIC`, `anon`, `authenticated` rollaridan standart huquqlar (`REVOKE ALL`) qaytarib olindi:
+`src/utils/edupayLogic.test.ts` va `src/utils/securityAudit.test.ts` orqali barcha xavfsizlik va mantiqiy testlar tekshirildi:
 
-| Jadval nomi | `anon` (Ommaviy Talaba) | `authenticated` (Oddiy foydalanuvchi) | Tasdiqlangan Admin (`app_metadata.role = 'admin'`) |
-| :--- | :--- | :--- | :--- |
-| `teachers` | Faqat `SELECT (id, full_name, subject, status)` (`status = 'active'`) | Rad etilgan (`false`) | To'liq `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
-| `groups` | Faqat `SELECT (id, group_name, teacher_id, schedule_info, status)` (`status = 'active'`) | Rad etilgan (`false`) | To'liq `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
-| `collection_periods` | Faqat `SELECT` (`status = 'active'`) | Rad etilgan (`false`) | To'liq `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
-| `submissions` | **0 kirish** (Faqat server API / Edge Function orqali yoziladi) | Rad etilgan (`false`) | To'liq `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
-| `student_rosters` | **0 kirish** | Rad etilgan (`false`) | To'liq `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
-| `audit_logs` | **0 kirish** | Rad etilgan (`false`) | Faqat `SELECT` va `INSERT` (o'zgartirish/o'chirish taqiqlangan) |
-| `admins` | **0 kirish** | Rad etilgan (`false`) | Faqat `SELECT` |
-
----
-
-## 4. MUHIT O'ZGARUVCHILARI AUDITI (ENVIRONMENT VARIABLE AUDIT)
-
-- **Frontend uchun xavfsiz (`VITE_*`):**
-  - `VITE_SUPABASE_URL` — Ommaviy loyiha URL manzili (xavfsiz).
-  - `VITE_SUPABASE_ANON_KEY` — Ommaviy anon kaliti (RLS bilan cheklangan, xavfsiz).
-- **Faqat Serverda saqlanadigan maxfiy kalitlar (`VITE_` prefiksi YO'Q):**
-  - `SUPABASE_SERVICE_ROLE_KEY` — Faqat backend/Edge Function ichida ishlatiladi, frontend bundle ichiga hech qachon kirmaydi.
-  - `ADMIN_INITIAL_EMAIL` & `ADMIN_INITIAL_PASSWORD` — Faqat serverda boshlang'ich administratorni yaratish uchun ishlatiladi.
-  - `SESSION_SECRET` — Faqat server sessiyalarini himoyalash uchun ishlatiladi.
-- **Natija:** Frontend (`src/`) fayllarida hech qanday maxfiy kalit, service_role key yoki parol mavjud emas.
-
----
-
-## 5. XAVFSIZLIK TESTLARI NATIJALARI (SECURITY TEST RESULTS: TESTS A–J)
-
-`src/utils/securityAudit.test.ts` va real brauzer (`playwright-cli`) orqali barcha 10 ta xavfsizlik testi bajarildi:
-
-- **Test A (Unauthenticated Admin Route Access):** Tizimga kirmasdan `/admin`, `/admin/students`, `/admin/teachers`, `/admin/reports` va `/api/admin/*` manzillariga murojaat qilish `401 Unauthorized` qaytaradi hamda UI `/admin/login` sahifasiga yo'naltiradi — **PASSED**.
-- **Test B (Authenticated Non-Admin User Access):** `app_metadata.role !== 'admin'` bo'lgan sessiya yoki talaba tokeni bilan `/api/admin/*` ga murojaat qilish rad etiladi (`401`/`403`) — **PASSED**.
-- **Test C (Public Student Submission):** Oddiy talaba `/` sahifasidan o'z to'lov sanasini muvaffaqiyatli yubora oladi (`201 Created`) va faqat tasdiqlash xabarini oladi — **PASSED**.
-- **Test D (Public Query of Submissions Table):** Oddiy foydalanuvchi `/rest/v1/submissions` yoki `/api/submissions` orqali to'lovlar jadvalini o'qiy olmaydi (`403 Forbidden`) — **PASSED**.
-- **Test E (Public Update of Submission):** Oddiy foydalanuvchi mavjud to'lov yozuvini o'zgartira olmaydi (`401`/`403`) — **PASSED**.
-- **Test F (Public Delete of Submission):** Oddiy foydalanuvchi to'lov yozuvini o'chira olmaydi (`401`/`403`) — **PASSED**.
-- **Test G (Privilege Escalation Attempt):** So'rov tanasida `role: "admin"`, `user_metadata: { role: "admin" }` yoki `app_metadata` yuborish `403 Forbidden` bilan bloklanadi va `audit_logs` ga yoziladi — **PASSED**.
-- **Test H (Teacher/Group Manipulation by Public User):** Oddiy foydalanuvchi o'qituvchi yoki guruh qo'sha olmaydi, tahrirlay olmaydi va o'chira olmaydi (`401`) — **PASSED**.
-- **Test I (Excel Export by Public User):** Oddiy foydalanuvchi `/api/admin/export-excel` orqali hisobot yuklab ololmaydi (`401`) — **PASSED**.
-- **Test J (Valid Administrator Access):** Tasdiqlangan administrator tizimga kirishi, barcha bo'limlarni boshqarishi, Excel hisobot yuklab olishi, Audit Loglarni ko'rishi va tizimdan xavfsiz chiqishi (`POST /api/auth/logout`) to'liq ishlaydi — **PASSED**.
+- **Test A (Unauthenticated Admin Route Access):** Tizimga kirmasdan `/api/admin/*` manzillariga murojaat qilish `401 Unauthorized` qaytaradi — **PASSED**.
+- **Test B (Student Code Gate & Student-to-Admin Crossover Block):** O'quvchi kodi (`EDU-2026`)siz `/api/public/context` va `/api/public/submissions` yopiq (`401`); o'quvchi kodi yoki `stu_*` tokeni bilan `/api/admin/*` va `/api/auth/login` ga o'tish qat'iyan `403 Forbidden` bilan bloklanadi — **PASSED**.
+- **Test C (Public Student Submission with Student Token):** Tasdiqlangan o'quvchi tokeni bilan to'lov sanasini yuborish `201 Created` qaytaradi va boshqa o'quvchilar ma'lumotini oshkor etmaydi — **PASSED**.
+- **Test D–I (Direct Table Query, Tamper, Privilege Escalation, Public Export Blocks):** Barcha ruxsatsiz so'rovlar `401`/`403` bilan rad etiladi — **PASSED**.
+- **Test J (Valid Administrator Login with Strong Admin Code, Code Rotation, Duplicate Edit Check, Excel Export, Logout):** Administrator faqat Login + Parol + Kuchaytirilgan Maxfiy Kod bilan kira oladi, kodlarni yangilay oladi, dublikat tahrirlar `409` bilan qaytariladi — **PASSED**.
+- **Test K (Idempotent Admin Bootstrap):** Dastlabki administrator hisobi va `admin_code_hash` idempotent tarzda yaratiladi — **PASSED**.

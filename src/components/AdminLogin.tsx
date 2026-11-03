@@ -1,23 +1,37 @@
 import React, { useState } from 'react';
-import { Lock, Mail, ArrowLeft, AlertTriangle, Eye, EyeOff, KeyRound, ShieldAlert } from 'lucide-react';
+import {
+  Lock,
+  Mail,
+  ArrowLeft,
+  AlertTriangle,
+  Eye,
+  EyeOff,
+  KeyRound,
+  ShieldAlert,
+  ShieldCheck,
+} from 'lucide-react';
 import { AdminUser } from '../types/edupay';
 
 interface AdminLoginProps {
   onLoginSuccess: (token: string, admin: AdminUser) => void;
   onBackToPublic: () => void;
   redirectedFrom?: string | null;
+  studentSessionActive?: boolean;
 }
 
 export const AdminLogin: React.FC<AdminLoginProps> = ({
   onLoginSuccess,
   onBackToPublic,
   redirectedFrom,
+  studentSessionActive = false,
 }) => {
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
+  const [adminCode, setAdminCode] = useState<string>('');
   const [mfaCode, setMfaCode] = useState<string>('');
   const [mfaRequired, setMfaRequired] = useState<boolean>(false);
   const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [showAdminCode, setShowAdminCode] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,6 +45,11 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
       return;
     }
 
+    if (!adminCode.trim()) {
+      setError('Iltimos, maxfiy administrator himoya kodini kiriting.');
+      return;
+    }
+
     if (mfaRequired && !/^\d{6}$/.test(mfaCode.trim())) {
       setError('Iltimos, 6 xonali ikki bosqichli tasdiqlash (2FA) kodini kiriting.');
       return;
@@ -41,6 +60,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
       const payload: Record<string, string> = {
         email: email.trim(),
         password,
+        admin_code: adminCode.trim(),
       };
       if (mfaRequired && mfaCode.trim()) {
         payload.mfa_code = mfaCode.trim();
@@ -61,7 +81,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
       }
 
       if (!res.ok) {
-        setError(data.error || "Elektron pochta yoki parol noto'g'ri.");
+        setError(data.error || "Elektron pochta, parol yoki administrator himoya kodi noto'g'ri.");
         setLoading(false);
         return;
       }
@@ -99,9 +119,24 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
               Administrator tizimga kirishi
             </h1>
             <p className="text-xs sm:text-sm text-slate-500">
-              Boshqaruv paneliga kirish faqat vakolatli o&apos;quv markazi administratori uchun ruxsat etilgan.
+              Boshqaruv paneliga kirish faqat kuchaytirilgan administrator himoya kodi va shaxsiy
+              hisob ma&apos;lumotlari orqali amalga oshiriladi.
             </p>
           </div>
+
+          {studentSessionActive && (
+            <div
+              role="alert"
+              data-testid="student-crossover-warning"
+              className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-900 text-xs sm:text-sm flex items-start gap-2.5"
+            >
+              <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-red-600" />
+              <span>
+                Siz hozir <strong>o&apos;quvchi kirish kodi</strong> bilan faolsiz. O&apos;quvchi
+                kodi orqali administrator paneliga o&apos;tish qat&apos;iyan taqiqlangan.
+              </span>
+            </div>
+          )}
 
           {redirectedFrom && !error && (
             <div
@@ -111,7 +146,8 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
             >
               <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" />
               <span>
-                Himoyalangan bo&apos;limga ({redirectedFrom}) kirish rad etildi. Davom etish uchun administrator sifatida tizimga kiring.
+                Himoyalangan bo&apos;limga ({redirectedFrom}) kirish rad etildi. Davom etish uchun
+                administrator paroli va kuchaytirilgan himoya kodini kiriting.
               </span>
             </div>
           )}
@@ -130,7 +166,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             <div className="space-y-1.5">
               <label htmlFor="admin-email" className="block text-sm font-semibold text-slate-800">
-                Elektron pochta (Login)
+                1. Elektron pochta (Login)
               </label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -141,7 +177,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
                   autoComplete="username"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Masalan: admin@markaz.uz"
+                  placeholder="Masalan: admin@edupay.uz"
                   className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-600"
                 />
               </div>
@@ -149,7 +185,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
 
             <div className="space-y-1.5">
               <label htmlFor="admin-password" className="block text-sm font-semibold text-slate-800">
-                Maxfiy parol
+                2. Shaxsiy parol
               </label>
               <div className="relative">
                 <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -174,10 +210,48 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
               </div>
             </div>
 
+            <div className="space-y-1.5">
+              <label
+                htmlFor="admin-security-code"
+                className="block text-sm font-semibold text-slate-800"
+              >
+                3. Maxfiy Administrator Himoya Kodi <span className="text-red-500">*</span>
+              </label>
+              <div className="relative">
+                <ShieldCheck className="w-4 h-4 text-emerald-600 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  id="admin-security-code"
+                  data-testid="admin-security-code-input"
+                  type={showAdminCode ? 'text' : 'password'}
+                  required
+                  autoComplete="off"
+                  value={adminCode}
+                  onChange={(e) => setAdminCode(e.target.value)}
+                  placeholder="Kuchaytirilgan maxfiy kod (kamida 10 belgi)"
+                  className="w-full pl-10 pr-10 py-3 bg-white border border-slate-300 rounded-xl text-sm font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-600"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAdminCode((prev) => !prev)}
+                  aria-label={showAdminCode ? 'Kodni yashirish' : "Kodni ko'rsatish"}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  {showAdminCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-xs text-slate-500">
+                O&apos;quvchi kirish kodi bu yerda qabul qilinmaydi va xavfsizlik jurnali orqali
+                bloklanadi.
+              </p>
+            </div>
+
             {mfaRequired && (
               <div className="space-y-1.5 pt-1">
-                <label htmlFor="admin-mfa-code" className="block text-sm font-semibold text-slate-800">
-                  2-bosqichli himoya kodi (6 xonali TOTP)
+                <label
+                  htmlFor="admin-mfa-code"
+                  className="block text-sm font-semibold text-slate-800"
+                >
+                  4. 2-bosqichli himoya kodi (6 xonali TOTP)
                 </label>
                 <input
                   id="admin-mfa-code"

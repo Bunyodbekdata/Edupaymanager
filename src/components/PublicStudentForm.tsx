@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Calendar,
   CheckCircle2,
@@ -9,12 +9,16 @@ import {
   GraduationCap,
   ShieldCheck,
   ChevronDown,
+  KeyRound,
+  LogOut,
+  Lock,
 } from 'lucide-react';
 import { PublicAppContext } from '../types/edupay';
 import {
   formatDateUz,
   validatePaymentDate,
   validateStudentName,
+  validateStudentAccessCode,
 } from '../utils/edupayLogic';
 
 interface SubmittedResult {
@@ -28,12 +32,48 @@ interface SubmittedResult {
 }
 
 interface PublicStudentFormProps {
-  onSecretTrigger?: () => void;
+  studentToken?: string | null;
+  onStudentTokenChange?: (token: string | null) => void;
 }
 
-export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTrigger }) => {
+export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({
+  studentToken: externalStudentToken,
+  onStudentTokenChange,
+}) => {
+  const [internalStudentToken, setInternalStudentToken] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return window.sessionStorage.getItem('edupay_student_token');
+    }
+    return null;
+  });
+
+  const activeStudentToken =
+    externalStudentToken !== undefined ? externalStudentToken : internalStudentToken;
+
+  const updateStudentToken = useCallback(
+    (token: string | null) => {
+      setInternalStudentToken(token);
+      if (typeof window !== 'undefined') {
+        if (token) {
+          window.sessionStorage.setItem('edupay_student_token', token);
+        } else {
+          window.sessionStorage.removeItem('edupay_student_token');
+        }
+      }
+      if (onStudentTokenChange) {
+        onStudentTokenChange(token);
+      }
+    },
+    [onStudentTokenChange]
+  );
+
+  // Student Access Code Gate state
+  const [studentCodeInput, setStudentCodeInput] = useState<string>('');
+  const [verifyingCode, setVerifyingCode] = useState<boolean>(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
+
   const [context, setContext] = useState<PublicAppContext | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Form state
@@ -50,26 +90,109 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTr
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
   const [submittedData, setSubmittedData] = useState<SubmittedResult | null>(null);
 
-  const fetchPublicContext = async () => {
+  const verifyAccessCode = useCallback(
+    async (rawCode: string) => {
+      const check = validateStudentAccessCode(rawCode);
+      if (!check.valid) {
+        setCodeError(check.error || "Iltimos, o'quvchi kirish kodini kiriting.");
+        return;
+      }
+
+      setVerifyingCode(true);
+      setCodeError(null);
+      try {
+        const res = await fetch('/api/public/verify-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ access_code: check.cleaned }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.studentToken) {
+          setCodeError(data?.error || "O'quvchi kirish kodi noto'g'ri.");
+          return;
+        }
+        updateStudentToken(data.studentToken);
+        setStudentCodeInput('');
+      } catch {
+        setCodeError("Server bilan bog'lanishda xatolik yuz berdi.");
+      } finally {
+        setVerifyingCode(false);
+      }
+    },
+    [updateStudentToken]
+  );
+
+  // Support automatic code verification when visiting via QR or Telegram link (?code=EDU-2026)
+  useEffect(() => {
+    if (typeof window === 'undefined' || activeStudentToken) return;
+    const params = new URLSearchParams(window.location.search);
+    const urlCode = params.get('code') || params.get('student_code');
+    if (urlCode && urlCode.trim()) {
+      setStudentCodeInput(urlCode.trim().toUpperCase());
+      verifyAccessCode(urlCode.trim());
+      // Clean URL query parameter after reading
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, '', cleanUrl);
+    }
+  }, [activeStudentToken, verifyAccessCode]);
+
+  const fetchPublicContext = useCallback(async () => {
+    if (!activeStudentToken) return;
     setLoading(true);
     setLoadError(null);
     try {
-      const res = await fetch('/api/public/context');
+      const res = await fetch('/api/public/context', {
+        headers: {
+          'X-Student-Token': activeStudentToken,
+        },
+      });
+      if (res.status === 401) {
+        const payload = await res.json().catch(() => ({}));
+        updateStudentToken(null);
+        setContext(null);
+        setCodeError(
+          payload?.error ||
+            "Kirish seansi yakunlangan yoki o'quvchi kirish kodi yangilangan. Iltimos, kodni qayta kiriting."
+        );
+        return;
+      }
       if (!res.ok) {
         throw new Error("Serverdan ma'lumotlarni yuklab bo'lmadi.");
       }
       const data: PublicAppContext = await res.json();
       setContext(data);
     } catch (err: any) {
-      setLoadError(err.message || "Tarmoq xatoligi yuz berdi.");
+      setLoadError(err.message || 'Tarmoq xatoligi yuz berdi.');
     } finally {
       setLoading(false);
     }
-  };
+  }, [activeStudentToken, updateStudentToken]);
 
   useEffect(() => {
-    fetchPublicContext();
-  }, []);
+    if (activeStudentToken) {
+      fetchPublicContext();
+    } else {
+      setContext(null);
+    }
+  }, [activeStudentToken, fetchPublicContext]);
+
+  const handleStudentLogout = async () => {
+    if (activeStudentToken) {
+      try {
+        await fetch('/api/public/logout-student', {
+          method: 'POST',
+          headers: { 'X-Student-Token': activeStudentToken },
+        });
+      } catch {
+        // Ignore network error on logout
+      }
+    }
+    updateStudentToken(null);
+    setContext(null);
+    setSubmittedData(null);
+    setFormError(null);
+    setDuplicateWarning(null);
+  };
 
   // Dynamically filter active teachers by search query
   const filteredTeachers = useMemo(() => {
@@ -116,9 +239,15 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTr
     return candidates.filter((d) => d >= min && d <= max);
   }, [context]);
 
+  const handleCodeSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (verifyingCode) return;
+    await verifyAccessCode(studentCodeInput);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submitting) return;
+    if (submitting || !activeStudentToken) return;
 
     setFormError(null);
     setDuplicateWarning(null);
@@ -134,7 +263,7 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTr
     }
 
     if (!selectedGroupId) {
-      setFormError("Iltimos, guruhni tanlang.");
+      setFormError('Iltimos, guruhni tanlang.');
       return;
     }
 
@@ -164,7 +293,10 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTr
     try {
       const response = await fetch('/api/public/submissions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Student-Token': activeStudentToken,
+        },
         body: JSON.stringify({
           teacher_id: selectedTeacherId,
           group_id: selectedGroupId,
@@ -174,6 +306,16 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTr
       });
 
       const payload = await response.json();
+
+      if (response.status === 401) {
+        updateStudentToken(null);
+        setContext(null);
+        setCodeError(
+          payload.error || "Kirish kodi muddati tugagan. Iltimos, o'quvchi kodini qayta kiriting."
+        );
+        setSubmitting(false);
+        return;
+      }
 
       if (response.status === 409 && payload.code === 'DUPLICATE_SUBMISSION') {
         setDuplicateWarning(payload.error);
@@ -188,7 +330,7 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTr
       }
 
       setSubmittedData(payload.submission);
-    } catch (err) {
+    } catch {
       setFormError("Server bilan bog'lanishda xatolik yuz berdi. Internet aloqasini tekshiring.");
     } finally {
       setSubmitting(false);
@@ -220,15 +362,29 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTr
           <span>EduPay Manager</span>
         </a>
 
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          <span className="hidden sm:inline">O&apos;quv markazi to&apos;lov muddatlari tizimi</span>
+        <div className="flex items-center gap-2.5 text-xs text-slate-500">
+          <span className="hidden md:inline">O&apos;quv markazi to&apos;lov muddatlari tizimi</span>
           {activePeriod && (
             <>
-              <span aria-hidden="true" className="hidden sm:inline">·</span>
+              <span aria-hidden="true" className="hidden md:inline">
+                ·
+              </span>
               <span className="font-semibold text-slate-800 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-lg">
                 {activePeriod.title}
               </span>
             </>
+          )}
+          {activeStudentToken && (
+            <button
+              type="button"
+              onClick={handleStudentLogout}
+              data-testid="student-logout-btn"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-medium transition-colors cursor-pointer"
+              title="O'quvchi kirish seansini yopish"
+            >
+              <LogOut className="w-3.5 h-3.5 text-slate-500" />
+              <span>Kodni yopish</span>
+            </button>
           )}
         </div>
       </header>
@@ -236,7 +392,88 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTr
       {/* Main Content */}
       <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12">
         <div className="w-full max-w-lg">
-          {loading ? (
+          {!activeStudentToken ? (
+            /* STUDENT ACCESS CODE GATE */
+            <div
+              data-testid="student-code-gate"
+              className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 space-y-6 shadow-xs"
+            >
+              <div className="space-y-2 text-center">
+                <div className="w-12 h-12 rounded-2xl bg-sky-50 text-sky-700 border border-sky-200 flex items-center justify-center mx-auto">
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+                  O&apos;quvchi kirish kodi
+                </h1>
+                <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                  To&apos;lov muddatini belgilash shakliga kirish uchun o&apos;quv markazi yoki
+                  o&apos;qituvchingiz tomonidan berilgan maxsus{' '}
+                  <span className="font-semibold text-slate-800">o&apos;quvchi kirish kodini</span>{' '}
+                  kiriting.
+                </p>
+              </div>
+
+              {codeError && (
+                <div
+                  role="alert"
+                  data-testid="student-code-error"
+                  className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs sm:text-sm flex items-start gap-2.5"
+                >
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-red-600" />
+                  <span>{codeError}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleCodeSubmit} className="space-y-4" noValidate>
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="student-access-code-input"
+                    className="block text-sm font-semibold text-slate-800"
+                  >
+                    Maxsus o&apos;quvchi kodi <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      id="student-access-code-input"
+                      data-testid="student-access-code-input"
+                      type="text"
+                      required
+                      autoComplete="off"
+                      value={studentCodeInput}
+                      onChange={(e) => {
+                        setStudentCodeInput(e.target.value.toUpperCase());
+                        setCodeError(null);
+                      }}
+                      placeholder="Masalan: EDU-2026"
+                      className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-xl text-sm font-mono tracking-wider uppercase text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-600"
+                    />
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Kodni Telegram guruhingizdagi e&apos;londan yoki o&apos;qituvchingizdan olishingiz
+                    mumkin.
+                  </p>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={verifyingCode}
+                  data-testid="student-code-submit-btn"
+                  className="w-full py-3.5 px-6 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white font-semibold text-sm rounded-xl transition-colors cursor-pointer"
+                >
+                  {verifyingCode ? 'Tekshirilmoqda...' : 'Shaklga kirish'}
+                </button>
+              </form>
+
+              <div className="pt-2 border-t border-slate-100 flex items-start gap-2.5 text-xs text-slate-500">
+                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <span>
+                  Xavfsizlik eslatmasi: O&apos;quvchi kodi faqat to&apos;lov muddatini yuborish
+                  uchun mo&apos;ljallangan va administrator paneliga kirish huquqini bermaydi.
+                </span>
+              </div>
+            </div>
+          ) : loading ? (
             <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 space-y-5">
               <div className="h-7 w-3/4 bg-slate-100 rounded animate-pulse" />
               <div className="h-4 w-2/3 bg-slate-100 rounded animate-pulse" />
@@ -271,8 +508,9 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTr
                 Oylik to&apos;lov muddatini belgilash
               </h1>
               <p className="text-sm text-slate-600 leading-relaxed">
-                Hozirgi vaqtda oylik to&apos;lov muddatlarini yig&apos;ish davri yopilgan yoki hali faollashtirilmagan.
-                Qo&apos;shimcha ma&apos;lumot uchun o&apos;quv markazi administratoriga murojaat qiling.
+                Hozirgi vaqtda oylik to&apos;lov muddatlarini yig&apos;ish davri yopilgan yoki hali
+                faollashtirilmagan. Qo&apos;shimcha ma&apos;lumot uchun o&apos;quv markazi
+                administratoriga murojaat qiling.
               </p>
             </div>
           ) : submittedData ? (
@@ -615,24 +853,16 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({ onSecretTr
         </div>
       </main>
 
-      {/* Quiet Footer */}
+      {/* Non-interactive Quiet Footer (no secret admin link) */}
       <footer className="py-4 px-4 sm:px-6 text-center text-xs text-slate-500 border-t border-slate-200 bg-white">
         <div className="max-w-lg mx-auto flex flex-wrap items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={onSecretTrigger}
-            className="flex items-center gap-1.5 whitespace-nowrap text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
-          >
+          <div className="flex items-center gap-1.5 whitespace-nowrap text-slate-500">
             <ShieldCheck className="w-3.5 h-3.5 text-slate-400 shrink-0" />
             <span>Ma&apos;lumotlar xavfsiz himoyalangan</span>
-          </button>
-          <button
-            type="button"
-            onClick={onSecretTrigger}
-            className="whitespace-nowrap text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
-          >
+          </div>
+          <div className="whitespace-nowrap text-slate-500">
             EduPay Manager © {new Date().getFullYear()}
-          </button>
+          </div>
         </div>
       </footer>
     </div>

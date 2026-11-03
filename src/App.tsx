@@ -33,6 +33,24 @@ export default function App() {
     return null;
   });
 
+  const [studentToken, setStudentToken] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return window.sessionStorage.getItem('edupay_student_token');
+    }
+    return null;
+  });
+
+  const handleStudentTokenChange = useCallback((token: string | null) => {
+    setStudentToken(token);
+    if (typeof window !== 'undefined') {
+      if (token) {
+        window.sessionStorage.setItem('edupay_student_token', token);
+      } else {
+        window.sessionStorage.removeItem('edupay_student_token');
+      }
+    }
+  }, []);
+
   const [adminUser, setAdminUser] = useState<AdminUser | null>(null);
   const [verifyingAuth, setVerifyingAuth] = useState<boolean>(() => Boolean(authToken));
 
@@ -75,6 +93,17 @@ export default function App() {
       return;
     }
 
+    // Strict client-side guard: student tokens (stu_*) can never be used as admin tokens
+    if (authToken.startsWith('stu_')) {
+      setAuthToken(null);
+      setAdminUser(null);
+      setVerifyingAuth(false);
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem('edupay_admin_token');
+      }
+      return;
+    }
+
     let cancelled = false;
     setVerifyingAuth(true);
     fetch('/api/auth/me', {
@@ -83,7 +112,7 @@ export default function App() {
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error('Unauthorized'))))
       .then((data) => {
         if (cancelled) return;
-        if (data?.admin) {
+        if (data?.admin && data.admin.app_metadata?.role === 'admin') {
           setAdminUser(data.admin);
         } else {
           throw new Error('No admin');
@@ -108,7 +137,7 @@ export default function App() {
     };
   }, [authToken]);
 
-  // Enforce route guard: unauthenticated visits to /admin* must redirect to /admin/login
+  // Enforce route guard: unauthenticated visits (or student-only sessions) to /admin* must redirect to /admin/login
   useEffect(() => {
     if (verifyingAuth) return;
     if (isProtectedAdminRoute(currentPath) && (!authToken || !adminUser)) {
@@ -187,6 +216,7 @@ export default function App() {
           navigateTo('/');
         }}
         redirectedFrom={redirectedFrom || (isProtectedAdminRoute(currentPath) ? currentPath : null)}
+        studentSessionActive={Boolean(studentToken)}
       />
     );
   }
@@ -235,5 +265,10 @@ export default function App() {
   }
 
   // Public Student Submission Route: /
-  return <PublicStudentForm onSecretTrigger={() => navigateTo('/admin/login')} />;
+  return (
+    <PublicStudentForm
+      studentToken={studentToken}
+      onStudentTokenChange={handleStudentTokenChange}
+    />
+  );
 }

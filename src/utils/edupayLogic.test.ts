@@ -8,10 +8,14 @@ import {
   compareUzbekNames,
   formatDateUz,
   validatePaymentDate,
+  validateCollectionPeriodWindow,
+  validateStudentAccessCode,
+  validateStrongAdminCode,
   compareRosterWithSubmissions,
   computePaymentDateDistribution,
   buildExcelFilename,
 } from './edupayLogic';
+import { generateQrCodeMatrix } from './qrCode';
 import { generateSubmissionsExcelBuffer } from './excelExport';
 
 test('cleanStudentName and normalizeStudentName handle spaces and Uzbek apostrophes', () => {
@@ -61,6 +65,45 @@ test('formatDateUz and validatePaymentDate enforce DD.MM.YYYY display and period
     validatePaymentDate('2026-11-28', '2026-11-01', '2026-11-25').valid,
     false
   );
+});
+
+test('validateCollectionPeriodWindow checks start_date and closing_date window', () => {
+  assert.equal(
+    validateCollectionPeriodWindow('2026-11-01', '2026-11-20', '2026-11-10').open,
+    true
+  );
+  assert.equal(
+    validateCollectionPeriodWindow('2026-11-05', '2026-11-20', '2026-11-01').open,
+    false
+  );
+  assert.equal(
+    validateCollectionPeriodWindow('2026-11-01', '2026-11-20', '2026-11-25').open,
+    false
+  );
+});
+
+test('validateStudentAccessCode and validateStrongAdminCode enforce strict two-tier separation', () => {
+  assert.equal(validateStudentAccessCode('edu-2026').valid, true);
+  assert.equal(validateStudentAccessCode('edu-2026').cleaned, 'EDU-2026');
+  assert.equal(validateStudentAccessCode('ab').valid, false);
+
+  // Weak admin code rejected
+  assert.equal(validateStrongAdminCode('short1!', 'EDU-2026').valid, false);
+  assert.equal(validateStrongAdminCode('NoSpecialChar123', 'EDU-2026').valid, false);
+  // Admin code containing student code rejected
+  assert.equal(validateStrongAdminCode('ADM#EDU-2026!Key', 'EDU-2026').valid, false);
+  // Strong distinct admin code accepted
+  assert.equal(validateStrongAdminCode('ADM#EduPay$2026!Key', 'EDU-2026').valid, true);
+});
+
+test('generateQrCodeMatrix produces a valid ISO/IEC 18004 QR matrix with finder patterns', () => {
+  const matrix = generateQrCodeMatrix('http://localhost:3000/?code=EDU-2026');
+  assert.ok(matrix.length >= 21);
+  assert.equal(matrix.length, matrix[0].length);
+  // Top-left 7x7 finder outer corner and center module must be dark (true)
+  assert.equal(matrix[0][0], true);
+  assert.equal(matrix[3][3], true);
+  assert.equal(matrix[1][1], false);
 });
 
 test('compareRosterWithSubmissions accurately identifies submitted and missing students', () => {

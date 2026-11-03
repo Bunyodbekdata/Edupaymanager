@@ -8,8 +8,8 @@
 
 **EduPay Manager** o'quv markazi administratorlarining har oy boshida guruhlarga kirib, qog'oz tarqatib, o'quvchilarning qachon to'lov qilishini yozdirib chiqish va ularni qo'lda boshqa jadvalga ko'chirish muammosini to'liq avtomatlashtiradi.
 
-- **O'quvchilar uchun (Ommaviy sahifa):** Ro'yxatdan o'tish talab etilmaydi. Telegram guruhlarga yuborilgan yagona havola orqali kirib, o'z o'qituvchisi va guruhini tanlaydi, ism-familiyasi hamda to'lov qilmoqchi bo'lgan sanasini belgilab yuboradi.
-- **Administrator uchun (Himoyalangan boshqaruv paneli):** Barcha kelib tushgan ma'lumotlar avtomatik ravishda o'qituvchi, guruh va oy bo'yicha alifbo tartibida saralanadi, guruh ro'yxati bilan solishtiriladi, A4 formatda chop etiladi yoki har bir guruh alohida varaqda (sheet) joylashgan tayyor **Excel (.xlsx)** fayl sifatida yuklab olinadi.
+- **O'quvchilar uchun (Kod orqali himoyalangan ommaviy shakl):** O'quvchilar o'quv markazi tomonidan berilgan maxsus **O'quvchi kirish kodi** (standart: `EDU-2026` yoki QR/Telegram havola orqali) yordamida shaklga kirib, o'z o'qituvchisi va guruhini tanlaydi, ism-familiyasi hamda to'lov qilmoqchi bo'lgan sanasini belgilab yuboradi. O'quvchi kodi bilan administrator paneliga o'tish qat'iyan bloklangan (`403 Forbidden`).
+- **Administrator uchun (Kuchaytirilgan kod bilan himoyalangan boshqaruv paneli):** Boshqaruv paneliga kirish uchun administrator **Login**, **Shaxsiy parol** va **Kuchaytirilgan Administrator Maxfiy Kodi**ni kiritishi shart. Barcha kelib tushgan ma'lumotlar avtomatik ravishda o'qituvchi, guruh va oy bo'yicha alifbo tartibida saralanadi, guruh ro'yxati bilan solishtiriladi, A4 formatda chop etiladi yoki har bir guruh alohida varaqda (sheet) joylashgan tayyor **Excel (.xlsx)** fayl sifatida yuklab olinadi.
 
 ---
 
@@ -20,6 +20,7 @@
 - **Ma'lumotlar bazasi:**
   - Mahalliy va Konteyner muhitida: **Node.js SQLite (`node:sqlite`, `data/edupay.sqlite`)** — WAL rejimi va Foreign Key cheklovlari bilan to'liq doimiy (persistent) relyatsion baza.
   - Tashqi bulutli joylashtirish uchun: **Supabase PostgreSQL sxemasi va RLS siyosatlari** (`supabase/migrations/001_edupay_schema_and_rls.sql`).
+- **QR Kod generatori:** ISO/IEC 18004 standarti bo'yicha Reed-Solomon $GF(2^8)$ xatoliklarni tuzatish algoritmiga ega haqiqiy skanerlanadigan QR kod (`src/utils/qrCode.ts`).
 - **Excel eksport va import:** `ExcelJS` (ko'p varaqli, ustunlari muzlatilgan, filtrli va chiroyli formatlangan `.xlsx` fayllar).
 - **Validatsiya:** `Zod` hamda o'zbek lotin alifbosi uchun maxsus normalizatsiya va saralash algoritmlari.
 
@@ -44,28 +45,34 @@
    ```
    Ilova `http://localhost:3000` manzilida ishga tushadi.
 
-4. **Unit testlarni tekshirish:**
+4. **Avtomatlashtirilgan testlarni tekshirish:**
    ```bash
-   npx --yes tsx --test src/utils/edupayLogic.test.ts
+   npm test
    ```
 
 ---
 
-## 4. Birinchi administrator hisobi va tizimga kirish
+## 4. Ikki darajali kirish tizimi (O'quvchi va Administrator kodlari)
 
-Ilova birinchi marta ishga tushganda ma'lumotlar bazasi avtomatik ravishda `.env` faylidagi `ADMIN_INITIAL_EMAIL` va `ADMIN_INITIAL_PASSWORD` qiymatlari asosida dastlabki administratorni (`scrypt` xeshlangan parol bilan) yaratadi:
+Ilova ikki darajali qat'iy ajratilgan kirish tizimi bilan himoyalangan:
 
+### A. O'quvchi kirish kodi (`/`)
+- **Standart O'quvchi Kirish Kodi:** `EDU-2026` (`.env` dagi `STUDENT_ACCESS_CODE` yoki admin panelning **Sozlamalar** bo'limidan o'zgartiriladi).
+- O'quvchi kodni kiritganda faqat `stu_...` prefiksli cheklangan o'quvchi seansi yaratiladi.
+- Ushbu kod yoki seans orqali `/admin` sahifalariga yoki `/api/admin/*` API nuqtalariga murojaat qilinsa, server darhol `403 Forbidden` qaytaradi va xavfsizlik jurnaliga (`STUDENT_ADMIN_CROSSOVER_BLOCKED`) yozib qo'yadi.
+
+### B. Administrator tizimga kirishi (`/admin/login`)
 - **Standart Login:** `admin@edupay.uz`
 - **Standart Parol:** `EduPay2026!`
-
-Administrator tizimga kirgach, **"Sozlamalar"** bo'limi orqali o'z ism-familiyasini va maxfiy parolini istalgan vaqtda o'zgartirishi mumkin. Xavfsizlik maqsadida ommaviy ro'yxatdan o'tish sahifasi mavjud emas.
+- **Standart Kuchaytirilgan Administrator Maxfiy Kodi:** `ADM#EduPay$2026!Key` (`.env` dagi `ADMIN_SECURITY_CODE` yoki **Sozlamalar** bo'limidan o'zgartiriladi).
+- Administrator maxfiy kodi kamida 10 ta belgidan iborat bo'lishi, katta harf, kichik harf, raqam va maxsus belgi qatnashishi hamda o'quvchi kodidan butunlay farq qilishi shart.
 
 ---
 
 ## 5. Ma'lumotlar bazasini sozlash
 
 ### A. Standart SQLite rejimi (Avtomatik)
-Hech qanday qo'shimcha sozlama talab qilinmaydi. Server `data/edupay.sqlite` faylini avtomatik yaratadi va barcha 7 ta jadvalni (`admins`, `teachers`, `groups`, `collection_periods`, `submissions`, `student_rosters`, `audit_logs`) relyatsion indekslar bilan shakllantiradi.
+Hech qanday qo'shimcha sozlama talab qilinmaydi. Server `data/edupay.sqlite` faylini avtomatik yaratadi va barcha jadvallarni (`admins`, `admin_sessions`, `student_sessions`, `access_control_config`, `teachers`, `groups`, `collection_periods`, `submissions`, `student_rosters`, `audit_logs`) relyatsion indekslar bilan shakllantiradi.
 
 ### B. Supabase PostgreSQL bilan sozlash (Ixtiyoriy)
 Agar loyihani Supabase bulutli bazasiga ulamoqchi bo'lsangiz:

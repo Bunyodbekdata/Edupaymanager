@@ -17,6 +17,7 @@ import {
 import { generateSubmissionsExcelBuffer } from '../utils/excelExport';
 
 interface ReportsAndExportViewProps {
+  token?: string;
   periods: CollectionPeriod[];
   teachers: Teacher[];
   groups: Group[];
@@ -25,6 +26,7 @@ interface ReportsAndExportViewProps {
 }
 
 export const ReportsAndExportView: React.FC<ReportsAndExportViewProps> = ({
+  token,
   periods,
   teachers,
   groups,
@@ -101,6 +103,21 @@ export const ReportsAndExportView: React.FC<ReportsAndExportViewProps> = ({
         selectedTeacherId,
         selectedGroupId,
       });
+
+      if (token) {
+        try {
+          const params = new URLSearchParams({
+            period_id: currentPeriod.id,
+            teacher_id: selectedTeacherId,
+            group_id: selectedGroupId,
+          });
+          await fetch(`/api/admin/export-excel?${params.toString()}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        } catch {
+          // Offline / local fallback
+        }
+      }
 
       const blob = new Blob([buffer], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
