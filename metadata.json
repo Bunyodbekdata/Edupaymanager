@@ -1,0 +1,6 @@
+{
+  "name": "EduPay Manager",
+  "description": "O'quv markazlari va til maktablari uchun o'quvchilarning oylik to'lov muddatlarini raqamli yig'ish, guruhlash va Excel hisobotlarini shakllantirish tizimi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
