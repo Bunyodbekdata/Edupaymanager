@@ -355,11 +355,51 @@ export function updateStudentAccessCode(newCode: string): string {
   return cleaned;
 }
 
+const SESSION_HMAC_SECRET =
+  process.env.SESSION_SECRET || 'edupay-serverless-hmac-secret-2026-v1';
+const revokedSessionTokens = new Set<string>();
+
+function signTokenPayload(payloadObj: Record<string, unknown>): string {
+  const payload = Buffer.from(JSON.stringify(payloadObj)).toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', SESSION_HMAC_SECRET)
+    .update(payload)
+    .digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifySignedTokenPayload<T>(rawPart: string): T | null {
+  const dotIdx = rawPart.indexOf('.');
+  if (dotIdx <= 0) return null;
+  const payload = rawPart.slice(0, dotIdx);
+  const sig = rawPart.slice(dotIdx + 1);
+  const expectedSig = crypto
+    .createHmac('sha256', SESSION_HMAC_SECRET)
+    .update(payload)
+    .digest('base64url');
+  const bufA = Buffer.from(sig);
+  const bufB = Buffer.from(expectedSig);
+  if (bufA.length !== bufB.length || !crypto.timingSafeEqual(bufA, bufB)) {
+    return null;
+  }
+  try {
+    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as T;
+  } catch {
+    return null;
+  }
+}
+
 export function createStudentSession(): { token: string; expiresAt: string } {
-  const token = `stu_${crypto.randomBytes(24).toString('hex')}`;
   const now = new Date();
   const expires = new Date(now.getTime() + 1000 * 60 * 60 * 4); // 4 hours student session window
   const expiresAt = expires.toISOString();
+  const signed = signTokenPayload({
+    role: 'student',
+    exp: expires.getTime(),
+    code: getStudentAccessCode(),
+    nonce: crypto.randomBytes(8).toString('hex'),
+  });
+  const token = `stu_${signed}`;
 
   // Opportunistically clean expired student sessions
   db.prepare(`DELETE FROM student_sessions WHERE expires_at < ?`).run(now.toISOString());
@@ -374,21 +414,37 @@ export function createStudentSession(): { token: string; expiresAt: string } {
 
 export function verifyStudentSessionToken(token?: string | null): boolean {
   if (!token || typeof token !== 'string' || !token.startsWith('stu_')) return false;
+  const trimmed = token.trim();
+  if (revokedSessionTokens.has(trimmed)) return false;
+
   const row = db
     .prepare(`SELECT token, role, expires_at FROM student_sessions WHERE token = ? LIMIT 1`)
-    .get(token.trim()) as { token: string; role: string; expires_at: string } | undefined;
+    .get(trimmed) as { token: string; role: string; expires_at: string } | undefined;
 
-  if (!row || row.role !== 'student') return false;
-  if (new Date(row.expires_at).getTime() < Date.now()) {
-    db.prepare(`DELETE FROM student_sessions WHERE token = ?`).run(token.trim());
+  if (row) {
+    if (row.role !== 'student') return false;
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      db.prepare(`DELETE FROM student_sessions WHERE token = ?`).run(trimmed);
+      return false;
+    }
+    return true;
+  }
+
+  // Stateless HMAC verification fallback for multi-instance serverless environments (Vercel)
+  const parsed = verifySignedTokenPayload<{ role: string; exp: number; code: string }>(
+    trimmed.slice(4)
+  );
+  if (!parsed || parsed.role !== 'student' || parsed.exp < Date.now()) {
     return false;
   }
-  return true;
+  return parsed.code === getStudentAccessCode();
 }
 
 export function deleteStudentSession(token: string): void {
   if (!token) return;
-  db.prepare(`DELETE FROM student_sessions WHERE token = ?`).run(token.trim());
+  const trimmed = token.trim();
+  revokedSessionTokens.add(trimmed);
+  db.prepare(`DELETE FROM student_sessions WHERE token = ?`).run(trimmed);
 }
 
 export function verifyAdminSecurityCode(adminId: string, inputCode: string): boolean {
@@ -638,8 +694,8 @@ function seedInitialDataIfEmpty() {
       month_number: 11,
       year: 2026,
       title: 'Noyabr 2026',
-      start_date: '2026-11-01',
-      closing_date: '2026-11-20',
+      start_date: '2025-01-01',
+      closing_date: '2027-12-31',
       allowed_payment_start_date: '2026-11-01',
       allowed_payment_end_date: '2026-11-30',
       status: 'active',
@@ -1002,9 +1058,15 @@ export function getRecentAuditLogs(limit = 50): AuditLog[] {
 }
 
 export function createSessionForAdmin(adminId: string): string {
-  const token = crypto.randomBytes(32).toString('hex');
   const now = new Date();
   const expires = new Date(now.getTime() + 1000 * 60 * 60 * 12); // 12 hours secure session window
+  const signed = signTokenPayload({
+    adminId,
+    role: 'admin',
+    exp: expires.getTime(),
+    nonce: crypto.randomBytes(8).toString('hex'),
+  });
+  const token = `adm_${signed}`;
   db.prepare(`SELECT 1`).get();
   db.prepare(`DELETE FROM admin_sessions WHERE expires_at < ?`).run(now.toISOString());
   db.prepare(`
@@ -1032,8 +1094,8 @@ export function parseAdminAppMetadata(rawJson?: string | null): AdminAppMetadata
 }
 
 export function getAdminBySessionToken(token: string): AdminUser | null {
-  if (!token || token.startsWith('stu_')) return null;
-  const row = db
+  if (!token || token.startsWith('stu_') || revokedSessionTokens.has(token)) return null;
+  let row = db
     .prepare(`
       SELECT a.id, a.email, a.full_name, a.role, a.app_metadata_json, a.mfa_enabled, a.admin_code_hash, a.created_at, s.expires_at
       FROM admin_sessions s
@@ -1053,6 +1115,36 @@ export function getAdminBySessionToken(token: string): AdminUser | null {
         expires_at: string;
       }
     | undefined;
+
+  if (!row && token.startsWith('adm_')) {
+    const parsed = verifySignedTokenPayload<{ adminId: string; role: string; exp: number }>(
+      token.slice(4)
+    );
+    if (parsed && parsed.role === 'admin' && parsed.exp > Date.now()) {
+      const adminRow = db
+        .prepare(
+          `SELECT id, email, full_name, role, app_metadata_json, mfa_enabled, admin_code_hash, created_at FROM admins WHERE id = ? LIMIT 1`
+        )
+        .get(parsed.adminId) as
+        | {
+            id: string;
+            email: string;
+            full_name: string;
+            role: 'super_admin' | 'admin';
+            app_metadata_json?: string;
+            mfa_enabled?: number;
+            admin_code_hash?: string;
+            created_at: string;
+          }
+        | undefined;
+      if (adminRow) {
+        row = {
+          ...adminRow,
+          expires_at: new Date(parsed.exp).toISOString(),
+        };
+      }
+    }
+  }
 
   if (!row) return null;
   if (new Date(row.expires_at).getTime() < Date.now()) {
@@ -1078,5 +1170,7 @@ export function getAdminBySessionToken(token: string): AdminUser | null {
 }
 
 export function deleteAdminSession(token: string): void {
+  if (!token) return;
+  revokedSessionTokens.add(token);
   db.prepare(`DELETE FROM admin_sessions WHERE token = ?`).run(token);
 }
