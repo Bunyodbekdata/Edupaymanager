@@ -253,12 +253,12 @@ function requireAdminAuth(req: AuthenticatedRequest, res: Response, next: NextFu
     });
   }
 
-  // Block any student session token (stu_*), student code, or forged JWT payload
+  // Block any student session token (stu_*), student code, or forged external JWT payload
   if (
     token.startsWith('stu_') ||
     token.startsWith('student-') ||
     token.startsWith('user-') ||
-    token.includes('.') ||
+    (!token.startsWith('adm_') && token.includes('.')) ||
     verifyStudentAccessCode(token)
   ) {
     logAdminAction({

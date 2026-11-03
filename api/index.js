@@ -1667,7 +1667,7 @@ function requireAdminAuth(req, res, next) {
       error: "Ruxsat etilmagan: Administrator tizimga kirmagan."
     });
   }
-  if (token.startsWith("stu_") || token.startsWith("student-") || token.startsWith("user-") || token.includes(".") || verifyStudentAccessCode(token)) {
+  if (token.startsWith("stu_") || token.startsWith("student-") || token.startsWith("user-") || !token.startsWith("adm_") && token.includes(".") || verifyStudentAccessCode(token)) {
     logAdminAction({
       adminUserId: "anonymous",
       adminEmail: "unauthorized@public",
