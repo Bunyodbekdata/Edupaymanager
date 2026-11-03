@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
-    "build": "vite build",
+    "build": "vite build && esbuild src/server/apiEntry.ts --bundle --platform=node --format=esm --packages=external --outfile=api/index.js",
     "preview": "vite preview",
     "test": "tsx --test src/utils/edupayLogic.test.ts src/utils/securityAudit.test.ts",
     "clean": "rm -rf dist server.js",
