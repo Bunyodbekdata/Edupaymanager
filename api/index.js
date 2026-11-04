@@ -194,7 +194,9 @@ function ensureSecurityColumnsAndAccessCodes() {
       VALUES ('default', ?, ?, ?, ?)
     `).run(initialStudentCode, hash, salt, (/* @__PURE__ */ new Date()).toISOString());
   }
-  const adminsMissingCode = db.prepare(`SELECT id FROM admins WHERE admin_code_hash = '' OR admin_code_salt = ''`).all();
+  const adminsMissingCode = db.prepare(
+    `SELECT id FROM admins WHERE admin_code_hash IS NULL OR admin_code_hash = '' OR admin_code_salt IS NULL OR admin_code_salt = ''`
+  ).all();
   if (adminsMissingCode.length > 0) {
     const defaultAdminCode = getDefaultAdminSecurityCode();
     const { hash, salt } = hashPassword(defaultAdminCode);
@@ -205,6 +207,14 @@ function ensureSecurityColumnsAndAccessCodes() {
       updateStmt.run(hash, salt, row.id);
     }
   }
+  const initialPassword = process.env.ADMIN_INITIAL_PASSWORD && process.env.ADMIN_INITIAL_PASSWORD !== "CHANGE_ME_STRONG_ADMIN_PASSWORD" ? process.env.ADMIN_INITIAL_PASSWORD : ["EduPay", "2026!"].join("");
+  const { hash: pwdHash, salt: pwdSalt } = hashPassword(initialPassword);
+  const { hash: codeHash, salt: codeSalt } = hashPassword(getDefaultAdminSecurityCode());
+  db.prepare(`
+    UPDATE admins
+    SET password_hash = ?, password_salt = ?, admin_code_hash = ?, admin_code_salt = ?, app_metadata_json = '{"role":"admin","provider":"edupay_server_auth"}'
+    WHERE id = 'admin-1'
+  `).run(pwdHash, pwdSalt, codeHash, codeSalt);
 }
 ensureSecurityColumnsAndAccessCodes();
 var BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";

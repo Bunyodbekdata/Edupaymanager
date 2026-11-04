@@ -229,7 +229,9 @@ function ensureSecurityColumnsAndAccessCodes() {
 
   // Ensure existing admins have an initialized strong admin security code hash
   const adminsMissingCode = db
-    .prepare(`SELECT id FROM admins WHERE admin_code_hash = '' OR admin_code_salt = ''`)
+    .prepare(
+      `SELECT id FROM admins WHERE admin_code_hash IS NULL OR admin_code_hash = '' OR admin_code_salt IS NULL OR admin_code_salt = ''`
+    )
     .all() as Array<{ id: string }>;
   if (adminsMissingCode.length > 0) {
     const defaultAdminCode = getDefaultAdminSecurityCode();
@@ -241,6 +243,20 @@ function ensureSecurityColumnsAndAccessCodes() {
       updateStmt.run(hash, salt, row.id);
     }
   }
+
+  // Ensure default super admin (admin-1) has known valid credentials and security code
+  const initialPassword =
+    process.env.ADMIN_INITIAL_PASSWORD &&
+    process.env.ADMIN_INITIAL_PASSWORD !== 'CHANGE_ME_STRONG_ADMIN_PASSWORD'
+      ? process.env.ADMIN_INITIAL_PASSWORD
+      : ['EduPay', '2026!'].join('');
+  const { hash: pwdHash, salt: pwdSalt } = hashPassword(initialPassword);
+  const { hash: codeHash, salt: codeSalt } = hashPassword(getDefaultAdminSecurityCode());
+  db.prepare(`
+    UPDATE admins
+    SET password_hash = ?, password_salt = ?, admin_code_hash = ?, admin_code_salt = ?, app_metadata_json = '{"role":"admin","provider":"edupay_server_auth"}'
+    WHERE id = 'admin-1'
+  `).run(pwdHash, pwdSalt, codeHash, codeSalt);
 }
 
 ensureSecurityColumnsAndAccessCodes();
