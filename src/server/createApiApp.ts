@@ -18,6 +18,7 @@ import {
   getAllRosters,
   getAllSubmissions,
   getAllTeachers,
+  purgeAllTeacherAndGroupData,
   getRecentAuditLogs,
   getStudentAccessCode,
   hashPassword,
@@ -1990,6 +1991,23 @@ export async function createApiApp() {
     } catch (error) {
       console.error('Error generating Excel export:', error);
       res.status(500).json({ error: 'Excel faylni yaratishda xatolik yuz berdi.' });
+    }
+  });
+
+  // --- CLEAR ALL TEACHERS, GROUPS, AND SUBMISSIONS ---
+  app.post('/api/admin/clear-all-data', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      purgeAllTeacherAndGroupData(req.admin!.id, req.admin!.email);
+      res.json({
+        success: true,
+        message: "Barcha o'qituvchilar, guruhlar, ro'yxatlar va to'lov arizalari muvaffaqiyatli tozalandi.",
+        teachers: getAllTeachers(),
+        groups: getAllGroups(),
+        submissions: getAllSubmissions(),
+      });
+    } catch (error) {
+      console.error('Error clearing data:', error);
+      res.status(500).json({ error: "Ma'lumotlarni tozalashda xatolik yuz berdi." });
     }
   });
 

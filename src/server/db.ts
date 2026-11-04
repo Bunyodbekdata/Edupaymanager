@@ -556,419 +556,68 @@ function seedInitialDataIfEmpty() {
     );
   }
 
-  const teacherCountRow = db.prepare('SELECT COUNT(*) as count FROM teachers').get() as { count: number };
-  if (teacherCountRow.count > 0) {
-    return;
-  }
-
-  // Seed Teachers
-  const teachersSeed: Teacher[] = [
-    {
-      id: 'tch-abdulaziz',
-      full_name: 'Abdulaziz Karimov',
-      subject: 'IELTS & Academic English',
-      phone: '+998 90 123 45 67',
-      status: 'active',
-      created_at: '2026-09-01T09:00:00.000Z',
-    },
-    {
-      id: 'tch-dilorom',
-      full_name: 'Dilorom Ismoilova',
-      subject: 'General English',
-      phone: '+998 90 234 56 78',
-      status: 'active',
-      created_at: '2026-09-02T09:00:00.000Z',
-    },
-    {
-      id: 'tch-sardor',
-      full_name: 'Sardor Rahimov',
-      subject: 'Pre-Intermediate & CEFR',
-      phone: '+998 93 345 67 89',
-      status: 'active',
-      created_at: '2026-09-03T09:00:00.000Z',
-    },
-    {
-      id: 'tch-nilufar',
-      full_name: 'Nilufar Toshmatova',
-      subject: 'Kids & Teens English',
-      phone: '+998 97 456 78 90',
-      status: 'active',
-      created_at: '2026-09-05T09:00:00.000Z',
-    },
-  ];
-
-  const insertTeacher = db.prepare(`
-    INSERT INTO teachers (id, full_name, subject, phone, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  for (const t of teachersSeed) {
-    insertTeacher.run(t.id, t.full_name, t.subject || '', t.phone || '', t.status, t.created_at);
-  }
-
-  // Seed Groups
-  const groupsSeed: Group[] = [
-    {
-      id: 'grp-ielts-01',
-      group_name: 'IELTS-01',
-      teacher_id: 'tch-abdulaziz',
-      schedule_info: 'Dush-Chor-Jum 14:00',
-      status: 'active',
-      created_at: '2026-09-05T10:00:00.000Z',
-    },
-    {
-      id: 'grp-ielts-02',
-      group_name: 'IELTS-02',
-      teacher_id: 'tch-abdulaziz',
-      schedule_info: 'Sesh-Pay-Shan 16:00',
-      status: 'active',
-      created_at: '2026-09-05T10:15:00.000Z',
-    },
-    {
-      id: 'grp-ge-a1',
-      group_name: 'General English A1',
-      teacher_id: 'tch-dilorom',
-      schedule_info: 'Dush-Chor-Jum 10:00',
-      status: 'active',
-      created_at: '2026-09-06T10:00:00.000Z',
-    },
-    {
-      id: 'grp-ge-a2',
-      group_name: 'General English A2',
-      teacher_id: 'tch-dilorom',
-      schedule_info: 'Sesh-Pay-Shan 14:00',
-      status: 'active',
-      created_at: '2026-09-06T10:30:00.000Z',
-    },
-    {
-      id: 'grp-pre-int',
-      group_name: 'Pre-Intermediate',
-      teacher_id: 'tch-sardor',
-      schedule_info: 'Dush-Chor-Jum 16:00',
-      status: 'active',
-      created_at: '2026-09-07T10:00:00.000Z',
-    },
-    {
-      id: 'grp-cefr-b2',
-      group_name: 'CEFR B2 Intensive',
-      teacher_id: 'tch-sardor',
-      schedule_info: 'Sesh-Pay-Shan 18:00',
-      status: 'active',
-      created_at: '2026-09-07T11:00:00.000Z',
-    },
-    {
-      id: 'grp-kids-01',
-      group_name: 'Kids English-01',
-      teacher_id: 'tch-nilufar',
-      schedule_info: 'Dush-Chor-Jum 09:00',
-      status: 'active',
-      created_at: '2026-09-08T09:00:00.000Z',
-    },
-  ];
-
-  const insertGroup = db.prepare(`
-    INSERT INTO groups (id, group_name, teacher_id, schedule_info, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  for (const g of groupsSeed) {
-    insertGroup.run(g.id, g.group_name, g.teacher_id, g.schedule_info || '', g.status, g.created_at);
-  }
-
-  // Seed Collection Periods (October 2026 archived/closed + November 2026 active)
-  const periodsSeed: CollectionPeriod[] = [
-    {
-      id: 'prd-2026-10',
-      month_name: 'Oktabr',
-      month_number: 10,
-      year: 2026,
-      title: 'Oktabr 2026',
-      start_date: '2026-10-01',
-      closing_date: '2026-10-15',
-      allowed_payment_start_date: '2026-10-01',
-      allowed_payment_end_date: '2026-10-31',
-      status: 'closed',
-      created_at: '2026-10-01T06:00:00.000Z',
-    },
-    {
-      id: 'prd-2026-11',
-      month_name: 'Noyabr',
-      month_number: 11,
-      year: 2026,
-      title: 'Noyabr 2026',
-      start_date: '2025-01-01',
-      closing_date: '2027-12-31',
-      allowed_payment_start_date: '2026-11-01',
-      allowed_payment_end_date: '2026-11-30',
-      status: 'active',
-      created_at: '2026-11-01T06:00:00.000Z',
-    },
-  ];
-
-  const insertPeriod = db.prepare(`
-    INSERT INTO collection_periods (
-      id, month_name, month_number, year, title,
-      start_date, closing_date, allowed_payment_start_date, allowed_payment_end_date,
-      status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const p of periodsSeed) {
+  // Ensure an active collection period exists if collection_periods is empty
+  const periodCountRow = db.prepare('SELECT COUNT(*) as count FROM collection_periods').get() as { count: number };
+  if (periodCountRow.count === 0) {
+    const insertPeriod = db.prepare(`
+      INSERT INTO collection_periods (
+        id, month_name, month_number, year, title,
+        start_date, closing_date, allowed_payment_start_date, allowed_payment_end_date,
+        status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
     insertPeriod.run(
-      p.id,
-      p.month_name,
-      p.month_number,
-      p.year,
-      p.title,
-      p.start_date,
-      p.closing_date,
-      p.allowed_payment_start_date,
-      p.allowed_payment_end_date,
-      p.status,
-      p.created_at
+      'prd-2026-11',
+      'Noyabr',
+      11,
+      2026,
+      'Noyabr 2026',
+      '2025-01-01',
+      '2027-12-31',
+      '2026-11-01',
+      '2026-11-30',
+      'active',
+      '2026-11-01T06:00:00.000Z'
     );
   }
 
-  // Seed Submissions for November 2026 & October 2026
-  const rawSubmissions: Array<{
-    periodId: string;
-    teacherId: string;
-    groupId: string;
-    name: string;
-    paymentDate: string;
-    createdAt: string;
-  }> = [
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-abdulaziz',
-      groupId: 'grp-ielts-01',
-      name: 'Abdullayev Aziz',
-      paymentDate: '2026-11-03',
-      createdAt: '2026-11-01T09:15:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-abdulaziz',
-      groupId: 'grp-ielts-01',
-      name: 'Karimov Akmal',
-      paymentDate: '2026-11-05',
-      createdAt: '2026-11-01T09:24:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-abdulaziz',
-      groupId: 'grp-ielts-01',
-      name: "O'ktamova Madina",
-      paymentDate: '2026-11-05',
-      createdAt: '2026-11-01T10:02:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-abdulaziz',
-      groupId: 'grp-ielts-01',
-      name: 'Rahimov Sardor',
-      paymentDate: '2026-11-10',
-      createdAt: '2026-11-01T10:40:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-abdulaziz',
-      groupId: 'grp-ielts-01',
-      name: 'Valiyev Ali',
-      paymentDate: '2026-11-05',
-      createdAt: '2026-11-01T11:10:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-abdulaziz',
-      groupId: 'grp-ielts-02',
-      name: 'Baxtiyorova Dilnoza',
-      paymentDate: '2026-11-03',
-      createdAt: '2026-11-01T11:30:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-abdulaziz',
-      groupId: 'grp-ielts-02',
-      name: "G'ulomov Javohir",
-      paymentDate: '2026-11-07',
-      createdAt: '2026-11-01T12:05:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-abdulaziz',
-      groupId: 'grp-ielts-02',
-      name: 'Tursunov Bekzod',
-      paymentDate: '2026-11-10',
-      createdAt: '2026-11-01T12:45:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-dilorom',
-      groupId: 'grp-ge-a1',
-      name: 'Alimova Sevara',
-      paymentDate: '2026-11-03',
-      createdAt: '2026-11-01T13:10:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-dilorom',
-      groupId: 'grp-ge-a1',
-      name: 'Ergashev Doston',
-      paymentDate: '2026-11-05',
-      createdAt: '2026-11-01T13:20:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-dilorom',
-      groupId: 'grp-ge-a1',
-      name: 'Nazarova Mohira',
-      paymentDate: '2026-11-12',
-      createdAt: '2026-11-01T14:00:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-dilorom',
-      groupId: 'grp-ge-a1',
-      name: "Qo'chqorov Ulug'bek",
-      paymentDate: '2026-11-15',
-      createdAt: '2026-11-01T14:25:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-dilorom',
-      groupId: 'grp-ge-a2',
-      name: 'Hamidov Bobur',
-      paymentDate: '2026-11-05',
-      createdAt: '2026-11-01T15:00:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-dilorom',
-      groupId: 'grp-ge-a2',
-      name: 'Yusupova Zarina',
-      paymentDate: '2026-11-10',
-      createdAt: '2026-11-01T15:12:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-sardor',
-      groupId: 'grp-pre-int',
-      name: 'Mirzayev Shoxrux',
-      paymentDate: '2026-11-07',
-      createdAt: '2026-11-01T16:00:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-sardor',
-      groupId: 'grp-pre-int',
-      name: 'Sobirova Rayhon',
-      paymentDate: '2026-11-15',
-      createdAt: '2026-11-01T16:30:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-sardor',
-      groupId: 'grp-pre-int',
-      name: 'Xolmatov Jasur',
-      paymentDate: '2026-11-10',
-      createdAt: '2026-11-01T17:05:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-11',
-      teacherId: 'tch-nilufar',
-      groupId: 'grp-kids-01',
-      name: 'Rustamova Asal',
-      paymentDate: '2026-11-05',
-      createdAt: '2026-11-01T17:45:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-10',
-      teacherId: 'tch-abdulaziz',
-      groupId: 'grp-ielts-01',
-      name: 'Abdullayev Aziz',
-      paymentDate: '2026-10-05',
-      createdAt: '2026-10-02T09:15:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-10',
-      teacherId: 'tch-abdulaziz',
-      groupId: 'grp-ielts-01',
-      name: 'Karimov Akmal',
-      paymentDate: '2026-10-07',
-      createdAt: '2026-10-02T10:15:00.000Z',
-    },
-    {
-      periodId: 'prd-2026-10',
-      teacherId: 'tch-dilorom',
-      groupId: 'grp-ge-a1',
-      name: 'Alimova Sevara',
-      paymentDate: '2026-10-04',
-      createdAt: '2026-10-02T11:20:00.000Z',
-    },
-  ];
+  // Purge any legacy mock/demo teachers and associated data if present
+  const legacyDemoTeacher = db
+    .prepare(
+      `SELECT 1 FROM teachers WHERE id IN ('tch-abdulaziz', 'tch-dilorom', 'tch-sardor', 'tch-nilufar') LIMIT 1`
+    )
+    .get();
 
-  const insertSubmission = db.prepare(`
-    INSERT INTO submissions (
-      id, collection_period_id, teacher_id, group_id,
-      student_full_name, normalized_student_name, payment_date,
-      note, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  if (legacyDemoTeacher) {
+    db.exec(`
+      DELETE FROM submissions;
+      DELETE FROM student_rosters;
+      DELETE FROM groups;
+      DELETE FROM teachers;
+    `);
+    logAdminAction({
+      adminUserId: 'admin-1',
+      adminEmail: 'admin@edupay.uz',
+      action: 'MALUMOTLAR_TOZALANDI',
+      affectedRecordId: 'all-demo-records',
+      details: "Barcha sinov (demo) o'qituvchilar, guruhlar va to'lov arizalari tozalandi. O'quv markazi ma'lumotlari noldan kiritish uchun tayyor.",
+    });
+  }
+}
+
+export function purgeAllTeacherAndGroupData(adminUserId: string, adminEmail: string) {
+  db.exec(`
+    DELETE FROM submissions;
+    DELETE FROM student_rosters;
+    DELETE FROM groups;
+    DELETE FROM teachers;
   `);
-
-  rawSubmissions.forEach((s, index) => {
-    const cleaned = cleanStudentName(s.name);
-    insertSubmission.run(
-      `sub-seed-${index + 1}`,
-      s.periodId,
-      s.teacherId,
-      s.groupId,
-      cleaned,
-      normalizeStudentName(cleaned),
-      s.paymentDate,
-      '',
-      s.createdAt,
-      s.createdAt
-    );
-  });
-
-  const insertRoster = db.prepare(`
-    INSERT INTO student_rosters (id, group_id, student_names_json, updated_at)
-    VALUES (?, ?, ?, ?)
-  `);
-
-  insertRoster.run(
-    'rst-ielts-01',
-    'grp-ielts-01',
-    JSON.stringify([
-      'Abdullayev Aziz',
-      'Isoqov Sardorbek',
-      'Karimov Akmal',
-      'Mahmudova Zilola',
-      "O'ktamova Madina",
-      'Rahimov Sardor',
-      'Valiyev Ali',
-    ]),
-    '2026-11-01T08:00:00.000Z'
-  );
-
-  insertRoster.run(
-    'rst-ge-a1',
-    'grp-ge-a1',
-    JSON.stringify([
-      'Alimova Sevara',
-      'Ergashev Doston',
-      'Komilov Sherzod',
-      'Nazarova Mohira',
-      "Qo'chqorov Ulug'bek",
-      'Saidova Munisa',
-    ]),
-    '2026-11-01T08:00:00.000Z'
-  );
-
   logAdminAction({
-    adminUserId: 'admin-1',
-    adminEmail: 'admin@edupay.uz',
-    action: 'TIZIM_ISHGA_TUSHIRILDI',
-    affectedRecordId: 'prd-2026-11',
-    details: "Noyabr 2026 oylik yig'im davri faollashtirildi va boshlang'ich guruhlar kiritildi.",
+    adminUserId,
+    adminEmail,
+    action: 'MALUMOTLAR_TOZALANDI',
+    affectedRecordId: 'all-records',
+    details: "Barcha o'qituvchilar, guruhlar, ro'yxatlar va arizalar administrator tomonidan tozalandi.",
   });
 }
 

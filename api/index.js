@@ -9,241 +9,6 @@ import { DatabaseSync } from "node:sqlite";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-
-// src/utils/edupayLogic.ts
-var UZBEK_MONTHS = [
-  "Yanvar",
-  "Fevral",
-  "Mart",
-  "Aprel",
-  "May",
-  "Iyun",
-  "Iyul",
-  "Avgust",
-  "Sentabr",
-  "Oktabr",
-  "Noyabr",
-  "Dekabr"
-];
-function standardizeUzbekApostrophes(input) {
-  return input.replace(/[\u2018\u2019\u02BB\u02BC\u0060\u00B4\u02CA\u2032]/g, "'");
-}
-function cleanStudentName(raw) {
-  if (!raw || typeof raw !== "string") return "";
-  return standardizeUzbekApostrophes(raw).trim().replace(/\s+/g, " ");
-}
-function normalizeStudentName(raw) {
-  return cleanStudentName(raw).toLowerCase();
-}
-function validateStudentName(raw) {
-  const cleaned = cleanStudentName(raw);
-  if (!cleaned) {
-    return {
-      valid: false,
-      error: "Iltimos, ism va familiyangizni kiriting.",
-      cleaned
-    };
-  }
-  if (cleaned.length < 5) {
-    return {
-      valid: false,
-      error: "Ism va familiya juda qisqa. Iltimos, to'liq kiriting (masalan: Ali Valiyev).",
-      cleaned
-    };
-  }
-  if (cleaned.length > 100) {
-    return {
-      valid: false,
-      error: "Ism va familiya 100 ta belgidan oshmasligi kerak.",
-      cleaned
-    };
-  }
-  const validCharsRegex = /^[A-Za-z\u00C0-\u024F\u0400-\u04FF'\-\s]+$/;
-  if (!validCharsRegex.test(cleaned)) {
-    return {
-      valid: false,
-      error: "Ism va familiyada faqat harflar, tire (-) va tutuq belgisi (') bo'lishi mumkin.",
-      cleaned
-    };
-  }
-  const parts = cleaned.split(" ").filter(Boolean);
-  if (parts.length < 2) {
-    return {
-      valid: false,
-      error: "Iltimos, ism va familiyangizni to'liq kiriting (kamida ikkita so'z, masalan: Ali Valiyev).",
-      cleaned
-    };
-  }
-  const hasTooShortWord = parts.some((part) => part.replace(/['\-]/g, "").length < 2);
-  if (hasTooShortWord) {
-    return {
-      valid: false,
-      error: "Ism va familiya qismlari kamida 2 ta harfdan iborat bo'lishi lozim.",
-      cleaned
-    };
-  }
-  return { valid: true, cleaned };
-}
-function validateStudentAccessCode(raw) {
-  const cleaned = (raw || "").trim().toUpperCase();
-  if (cleaned.length < 4 || cleaned.length > 32) {
-    return {
-      valid: false,
-      error: "O'quvchi kirish kodi 4 tadan 32 tagacha belgidan iborat bo'lishi kerak.",
-      cleaned
-    };
-  }
-  if (!/^[A-Z0-9\-_]+$/.test(cleaned)) {
-    return {
-      valid: false,
-      error: "O'quvchi kirish kodida faqat lotin harflari, raqamlar va tire (-) bo'lishi mumkin.",
-      cleaned
-    };
-  }
-  return { valid: true, cleaned };
-}
-function validateStrongAdminCode(rawAdminCode, currentStudentCode) {
-  const cleaned = (rawAdminCode || "").trim();
-  if (cleaned.length < 10) {
-    return {
-      valid: false,
-      error: "Administrator maxfiy kodi kamida 10 ta belgidan iborat bo'lishi shart.",
-      cleaned
-    };
-  }
-  if (cleaned.length > 128) {
-    return {
-      valid: false,
-      error: "Administrator maxfiy kodi 128 ta belgidan oshmasligi kerak.",
-      cleaned
-    };
-  }
-  if (!/[A-Z]/.test(cleaned)) {
-    return {
-      valid: false,
-      error: "Administrator maxfiy kodida kamida bitta bosh harf (A-Z) bo'lishi shart.",
-      cleaned
-    };
-  }
-  if (!/[a-z]/.test(cleaned)) {
-    return {
-      valid: false,
-      error: "Administrator maxfiy kodida kamida bitta kichik harf (a-z) bo'lishi shart.",
-      cleaned
-    };
-  }
-  if (!/[0-9]/.test(cleaned)) {
-    return {
-      valid: false,
-      error: "Administrator maxfiy kodida kamida bitta raqam (0-9) bo'lishi shart.",
-      cleaned
-    };
-  }
-  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?~`]/.test(cleaned)) {
-    return {
-      valid: false,
-      error: "Administrator maxfiy kodida kamida bitta maxsus belgi (!@#$%^&* va h.k.) bo'lishi shart.",
-      cleaned
-    };
-  }
-  if (currentStudentCode) {
-    const normAdmin = cleaned.toLowerCase();
-    const normStudent = currentStudentCode.trim().toLowerCase();
-    if (normStudent && (normAdmin === normStudent || normAdmin.includes(normStudent))) {
-      return {
-        valid: false,
-        error: "Xavfsizlik qoidasi: Administrator maxfiy kodi o'quvchi kirish kodi bilan bir xil bo'lishi yoki uni o'z ichiga olishi qat'iyan man etiladi!",
-        cleaned
-      };
-    }
-  }
-  return { valid: true, cleaned };
-}
-function uzbekSortKey(str) {
-  const s = normalizeStudentName(str);
-  return s.replace(/o'/g, "o\uFFFF1").replace(/g'/g, "g\uFFFF1").replace(/sh/g, "s\uFFFF2").replace(/ch/g, "c\uFFFF2");
-}
-function compareUzbekNames(a, b) {
-  const keyA = uzbekSortKey(a);
-  const keyB = uzbekSortKey(b);
-  if (keyA < keyB) return -1;
-  if (keyA > keyB) return 1;
-  return 0;
-}
-function formatDateUz(isoDate) {
-  if (!isoDate) return "";
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate.trim());
-  if (!match) return isoDate;
-  const [, year, month, day] = match;
-  return `${day}.${month}.${year}`;
-}
-function validateCollectionPeriodWindow(startDate, closingDate, referenceIsoDate) {
-  const today = referenceIsoDate || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  if (startDate && today < startDate) {
-    return {
-      valid: false,
-      error: `Oylik to'lov muddatlarini qabul qilish ${formatDateUz(startDate)} sanasidan boshlanadi.`
-    };
-  }
-  if (closingDate && today > closingDate) {
-    return {
-      valid: false,
-      error: `Ushbu oy uchun to'lov muddatlarini qabul qilish ${formatDateUz(closingDate)} sanasida yakunlangan.`
-    };
-  }
-  return { valid: true };
-}
-function validatePaymentDate(paymentDate, allowedStartDate, allowedEndDate) {
-  if (!paymentDate || typeof paymentDate !== "string") {
-    return { valid: false, error: "Iltimos, to'lov sanasini tanlang." };
-  }
-  const trimmed = paymentDate.trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-    return { valid: false, error: "To'lov sanasi noto'g'ri formatda kiritilgan." };
-  }
-  const [y, m, d] = trimmed.split("-").map(Number);
-  const dateObj = new Date(Date.UTC(y, m - 1, d));
-  if (dateObj.getUTCFullYear() !== y || dateObj.getUTCMonth() + 1 !== m || dateObj.getUTCDate() !== d) {
-    return { valid: false, error: "Bunday sana mavjud emas." };
-  }
-  if (allowedStartDate && trimmed < allowedStartDate) {
-    return {
-      valid: false,
-      error: `To'lov sanasi ${formatDateUz(allowedStartDate)} dan oldin bo'lishi mumkin emas.`
-    };
-  }
-  if (allowedEndDate && trimmed > allowedEndDate) {
-    return {
-      valid: false,
-      error: `To'lov sanasi ${formatDateUz(allowedEndDate)} dan keyin bo'lishi mumkin emas.`
-    };
-  }
-  return { valid: true };
-}
-function sanitizeExcelSheetName(name, usedNames) {
-  const base = name.replace(/[\\/?*:[\]]/g, "_").trim().slice(0, 28) || "Guruh";
-  let candidate = base;
-  let counter = 2;
-  while (usedNames.has(candidate.toLowerCase())) {
-    candidate = `${base.slice(0, 25)}_${counter}`;
-    counter++;
-  }
-  usedNames.add(candidate.toLowerCase());
-  return candidate;
-}
-function buildExcelFilename(options) {
-  const cleanPart = (s) => standardizeUzbekApostrophes(s).replace(/'/g, "").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  const periodPart = `${cleanPart(options.monthName)}_${options.year}`;
-  if (options.groupName) {
-    return `${cleanPart(options.groupName)}_${periodPart}.xlsx`;
-  }
-  if (options.teacherName) {
-    return `Oqituvchi_${cleanPart(options.teacherName)}_${periodPart}.xlsx`;
-  }
-  return `Tolov_hisoboti_${periodPart}.xlsx`;
-}
-
-// src/server/db.ts
 var DATA_DIR = process.env.VERCEL ? path.join("/tmp", "edupay-data") : path.resolve(process.cwd(), "data");
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -663,395 +428,61 @@ function seedInitialDataIfEmpty() {
       "2026-09-01T08:00:00.000Z"
     );
   }
-  const teacherCountRow = db.prepare("SELECT COUNT(*) as count FROM teachers").get();
-  if (teacherCountRow.count > 0) {
-    return;
-  }
-  const teachersSeed = [
-    {
-      id: "tch-abdulaziz",
-      full_name: "Abdulaziz Karimov",
-      subject: "IELTS & Academic English",
-      phone: "+998 90 123 45 67",
-      status: "active",
-      created_at: "2026-09-01T09:00:00.000Z"
-    },
-    {
-      id: "tch-dilorom",
-      full_name: "Dilorom Ismoilova",
-      subject: "General English",
-      phone: "+998 90 234 56 78",
-      status: "active",
-      created_at: "2026-09-02T09:00:00.000Z"
-    },
-    {
-      id: "tch-sardor",
-      full_name: "Sardor Rahimov",
-      subject: "Pre-Intermediate & CEFR",
-      phone: "+998 93 345 67 89",
-      status: "active",
-      created_at: "2026-09-03T09:00:00.000Z"
-    },
-    {
-      id: "tch-nilufar",
-      full_name: "Nilufar Toshmatova",
-      subject: "Kids & Teens English",
-      phone: "+998 97 456 78 90",
-      status: "active",
-      created_at: "2026-09-05T09:00:00.000Z"
-    }
-  ];
-  const insertTeacher = db.prepare(`
-    INSERT INTO teachers (id, full_name, subject, phone, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  for (const t of teachersSeed) {
-    insertTeacher.run(t.id, t.full_name, t.subject || "", t.phone || "", t.status, t.created_at);
-  }
-  const groupsSeed = [
-    {
-      id: "grp-ielts-01",
-      group_name: "IELTS-01",
-      teacher_id: "tch-abdulaziz",
-      schedule_info: "Dush-Chor-Jum 14:00",
-      status: "active",
-      created_at: "2026-09-05T10:00:00.000Z"
-    },
-    {
-      id: "grp-ielts-02",
-      group_name: "IELTS-02",
-      teacher_id: "tch-abdulaziz",
-      schedule_info: "Sesh-Pay-Shan 16:00",
-      status: "active",
-      created_at: "2026-09-05T10:15:00.000Z"
-    },
-    {
-      id: "grp-ge-a1",
-      group_name: "General English A1",
-      teacher_id: "tch-dilorom",
-      schedule_info: "Dush-Chor-Jum 10:00",
-      status: "active",
-      created_at: "2026-09-06T10:00:00.000Z"
-    },
-    {
-      id: "grp-ge-a2",
-      group_name: "General English A2",
-      teacher_id: "tch-dilorom",
-      schedule_info: "Sesh-Pay-Shan 14:00",
-      status: "active",
-      created_at: "2026-09-06T10:30:00.000Z"
-    },
-    {
-      id: "grp-pre-int",
-      group_name: "Pre-Intermediate",
-      teacher_id: "tch-sardor",
-      schedule_info: "Dush-Chor-Jum 16:00",
-      status: "active",
-      created_at: "2026-09-07T10:00:00.000Z"
-    },
-    {
-      id: "grp-cefr-b2",
-      group_name: "CEFR B2 Intensive",
-      teacher_id: "tch-sardor",
-      schedule_info: "Sesh-Pay-Shan 18:00",
-      status: "active",
-      created_at: "2026-09-07T11:00:00.000Z"
-    },
-    {
-      id: "grp-kids-01",
-      group_name: "Kids English-01",
-      teacher_id: "tch-nilufar",
-      schedule_info: "Dush-Chor-Jum 09:00",
-      status: "active",
-      created_at: "2026-09-08T09:00:00.000Z"
-    }
-  ];
-  const insertGroup = db.prepare(`
-    INSERT INTO groups (id, group_name, teacher_id, schedule_info, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  for (const g of groupsSeed) {
-    insertGroup.run(g.id, g.group_name, g.teacher_id, g.schedule_info || "", g.status, g.created_at);
-  }
-  const periodsSeed = [
-    {
-      id: "prd-2026-10",
-      month_name: "Oktabr",
-      month_number: 10,
-      year: 2026,
-      title: "Oktabr 2026",
-      start_date: "2026-10-01",
-      closing_date: "2026-10-15",
-      allowed_payment_start_date: "2026-10-01",
-      allowed_payment_end_date: "2026-10-31",
-      status: "closed",
-      created_at: "2026-10-01T06:00:00.000Z"
-    },
-    {
-      id: "prd-2026-11",
-      month_name: "Noyabr",
-      month_number: 11,
-      year: 2026,
-      title: "Noyabr 2026",
-      start_date: "2025-01-01",
-      closing_date: "2027-12-31",
-      allowed_payment_start_date: "2026-11-01",
-      allowed_payment_end_date: "2026-11-30",
-      status: "active",
-      created_at: "2026-11-01T06:00:00.000Z"
-    }
-  ];
-  const insertPeriod = db.prepare(`
-    INSERT INTO collection_periods (
-      id, month_name, month_number, year, title,
-      start_date, closing_date, allowed_payment_start_date, allowed_payment_end_date,
-      status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const p of periodsSeed) {
+  const periodCountRow = db.prepare("SELECT COUNT(*) as count FROM collection_periods").get();
+  if (periodCountRow.count === 0) {
+    const insertPeriod = db.prepare(`
+      INSERT INTO collection_periods (
+        id, month_name, month_number, year, title,
+        start_date, closing_date, allowed_payment_start_date, allowed_payment_end_date,
+        status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
     insertPeriod.run(
-      p.id,
-      p.month_name,
-      p.month_number,
-      p.year,
-      p.title,
-      p.start_date,
-      p.closing_date,
-      p.allowed_payment_start_date,
-      p.allowed_payment_end_date,
-      p.status,
-      p.created_at
+      "prd-2026-11",
+      "Noyabr",
+      11,
+      2026,
+      "Noyabr 2026",
+      "2025-01-01",
+      "2027-12-31",
+      "2026-11-01",
+      "2026-11-30",
+      "active",
+      "2026-11-01T06:00:00.000Z"
     );
   }
-  const rawSubmissions = [
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-abdulaziz",
-      groupId: "grp-ielts-01",
-      name: "Abdullayev Aziz",
-      paymentDate: "2026-11-03",
-      createdAt: "2026-11-01T09:15:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-abdulaziz",
-      groupId: "grp-ielts-01",
-      name: "Karimov Akmal",
-      paymentDate: "2026-11-05",
-      createdAt: "2026-11-01T09:24:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-abdulaziz",
-      groupId: "grp-ielts-01",
-      name: "O'ktamova Madina",
-      paymentDate: "2026-11-05",
-      createdAt: "2026-11-01T10:02:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-abdulaziz",
-      groupId: "grp-ielts-01",
-      name: "Rahimov Sardor",
-      paymentDate: "2026-11-10",
-      createdAt: "2026-11-01T10:40:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-abdulaziz",
-      groupId: "grp-ielts-01",
-      name: "Valiyev Ali",
-      paymentDate: "2026-11-05",
-      createdAt: "2026-11-01T11:10:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-abdulaziz",
-      groupId: "grp-ielts-02",
-      name: "Baxtiyorova Dilnoza",
-      paymentDate: "2026-11-03",
-      createdAt: "2026-11-01T11:30:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-abdulaziz",
-      groupId: "grp-ielts-02",
-      name: "G'ulomov Javohir",
-      paymentDate: "2026-11-07",
-      createdAt: "2026-11-01T12:05:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-abdulaziz",
-      groupId: "grp-ielts-02",
-      name: "Tursunov Bekzod",
-      paymentDate: "2026-11-10",
-      createdAt: "2026-11-01T12:45:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-dilorom",
-      groupId: "grp-ge-a1",
-      name: "Alimova Sevara",
-      paymentDate: "2026-11-03",
-      createdAt: "2026-11-01T13:10:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-dilorom",
-      groupId: "grp-ge-a1",
-      name: "Ergashev Doston",
-      paymentDate: "2026-11-05",
-      createdAt: "2026-11-01T13:20:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-dilorom",
-      groupId: "grp-ge-a1",
-      name: "Nazarova Mohira",
-      paymentDate: "2026-11-12",
-      createdAt: "2026-11-01T14:00:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-dilorom",
-      groupId: "grp-ge-a1",
-      name: "Qo'chqorov Ulug'bek",
-      paymentDate: "2026-11-15",
-      createdAt: "2026-11-01T14:25:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-dilorom",
-      groupId: "grp-ge-a2",
-      name: "Hamidov Bobur",
-      paymentDate: "2026-11-05",
-      createdAt: "2026-11-01T15:00:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-dilorom",
-      groupId: "grp-ge-a2",
-      name: "Yusupova Zarina",
-      paymentDate: "2026-11-10",
-      createdAt: "2026-11-01T15:12:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-sardor",
-      groupId: "grp-pre-int",
-      name: "Mirzayev Shoxrux",
-      paymentDate: "2026-11-07",
-      createdAt: "2026-11-01T16:00:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-sardor",
-      groupId: "grp-pre-int",
-      name: "Sobirova Rayhon",
-      paymentDate: "2026-11-15",
-      createdAt: "2026-11-01T16:30:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-sardor",
-      groupId: "grp-pre-int",
-      name: "Xolmatov Jasur",
-      paymentDate: "2026-11-10",
-      createdAt: "2026-11-01T17:05:00.000Z"
-    },
-    {
-      periodId: "prd-2026-11",
-      teacherId: "tch-nilufar",
-      groupId: "grp-kids-01",
-      name: "Rustamova Asal",
-      paymentDate: "2026-11-05",
-      createdAt: "2026-11-01T17:45:00.000Z"
-    },
-    {
-      periodId: "prd-2026-10",
-      teacherId: "tch-abdulaziz",
-      groupId: "grp-ielts-01",
-      name: "Abdullayev Aziz",
-      paymentDate: "2026-10-05",
-      createdAt: "2026-10-02T09:15:00.000Z"
-    },
-    {
-      periodId: "prd-2026-10",
-      teacherId: "tch-abdulaziz",
-      groupId: "grp-ielts-01",
-      name: "Karimov Akmal",
-      paymentDate: "2026-10-07",
-      createdAt: "2026-10-02T10:15:00.000Z"
-    },
-    {
-      periodId: "prd-2026-10",
-      teacherId: "tch-dilorom",
-      groupId: "grp-ge-a1",
-      name: "Alimova Sevara",
-      paymentDate: "2026-10-04",
-      createdAt: "2026-10-02T11:20:00.000Z"
-    }
-  ];
-  const insertSubmission = db.prepare(`
-    INSERT INTO submissions (
-      id, collection_period_id, teacher_id, group_id,
-      student_full_name, normalized_student_name, payment_date,
-      note, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  const legacyDemoTeacher = db.prepare(
+    `SELECT 1 FROM teachers WHERE id IN ('tch-abdulaziz', 'tch-dilorom', 'tch-sardor', 'tch-nilufar') LIMIT 1`
+  ).get();
+  if (legacyDemoTeacher) {
+    db.exec(`
+      DELETE FROM submissions;
+      DELETE FROM student_rosters;
+      DELETE FROM groups;
+      DELETE FROM teachers;
+    `);
+    logAdminAction({
+      adminUserId: "admin-1",
+      adminEmail: "admin@edupay.uz",
+      action: "MALUMOTLAR_TOZALANDI",
+      affectedRecordId: "all-demo-records",
+      details: "Barcha sinov (demo) o'qituvchilar, guruhlar va to'lov arizalari tozalandi. O'quv markazi ma'lumotlari noldan kiritish uchun tayyor."
+    });
+  }
+}
+function purgeAllTeacherAndGroupData(adminUserId, adminEmail) {
+  db.exec(`
+    DELETE FROM submissions;
+    DELETE FROM student_rosters;
+    DELETE FROM groups;
+    DELETE FROM teachers;
   `);
-  rawSubmissions.forEach((s, index) => {
-    const cleaned = cleanStudentName(s.name);
-    insertSubmission.run(
-      `sub-seed-${index + 1}`,
-      s.periodId,
-      s.teacherId,
-      s.groupId,
-      cleaned,
-      normalizeStudentName(cleaned),
-      s.paymentDate,
-      "",
-      s.createdAt,
-      s.createdAt
-    );
-  });
-  const insertRoster = db.prepare(`
-    INSERT INTO student_rosters (id, group_id, student_names_json, updated_at)
-    VALUES (?, ?, ?, ?)
-  `);
-  insertRoster.run(
-    "rst-ielts-01",
-    "grp-ielts-01",
-    JSON.stringify([
-      "Abdullayev Aziz",
-      "Isoqov Sardorbek",
-      "Karimov Akmal",
-      "Mahmudova Zilola",
-      "O'ktamova Madina",
-      "Rahimov Sardor",
-      "Valiyev Ali"
-    ]),
-    "2026-11-01T08:00:00.000Z"
-  );
-  insertRoster.run(
-    "rst-ge-a1",
-    "grp-ge-a1",
-    JSON.stringify([
-      "Alimova Sevara",
-      "Ergashev Doston",
-      "Komilov Sherzod",
-      "Nazarova Mohira",
-      "Qo'chqorov Ulug'bek",
-      "Saidova Munisa"
-    ]),
-    "2026-11-01T08:00:00.000Z"
-  );
   logAdminAction({
-    adminUserId: "admin-1",
-    adminEmail: "admin@edupay.uz",
-    action: "TIZIM_ISHGA_TUSHIRILDI",
-    affectedRecordId: "prd-2026-11",
-    details: "Noyabr 2026 oylik yig'im davri faollashtirildi va boshlang'ich guruhlar kiritildi."
+    adminUserId,
+    adminEmail,
+    action: "MALUMOTLAR_TOZALANDI",
+    affectedRecordId: "all-records",
+    details: "Barcha o'qituvchilar, guruhlar, ro'yxatlar va arizalar administrator tomonidan tozalandi."
   });
 }
 seedInitialDataIfEmpty();
@@ -1183,6 +614,241 @@ function deleteAdminSession(token) {
   if (!token) return;
   revokedSessionTokens.add(token);
   db.prepare(`DELETE FROM admin_sessions WHERE token = ?`).run(token);
+}
+
+// src/utils/edupayLogic.ts
+var UZBEK_MONTHS = [
+  "Yanvar",
+  "Fevral",
+  "Mart",
+  "Aprel",
+  "May",
+  "Iyun",
+  "Iyul",
+  "Avgust",
+  "Sentabr",
+  "Oktabr",
+  "Noyabr",
+  "Dekabr"
+];
+function standardizeUzbekApostrophes(input) {
+  return input.replace(/[\u2018\u2019\u02BB\u02BC\u0060\u00B4\u02CA\u2032]/g, "'");
+}
+function cleanStudentName(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  return standardizeUzbekApostrophes(raw).trim().replace(/\s+/g, " ");
+}
+function normalizeStudentName(raw) {
+  return cleanStudentName(raw).toLowerCase();
+}
+function validateStudentName(raw) {
+  const cleaned = cleanStudentName(raw);
+  if (!cleaned) {
+    return {
+      valid: false,
+      error: "Iltimos, ism va familiyangizni kiriting.",
+      cleaned
+    };
+  }
+  if (cleaned.length < 5) {
+    return {
+      valid: false,
+      error: "Ism va familiya juda qisqa. Iltimos, to'liq kiriting (masalan: Ali Valiyev).",
+      cleaned
+    };
+  }
+  if (cleaned.length > 100) {
+    return {
+      valid: false,
+      error: "Ism va familiya 100 ta belgidan oshmasligi kerak.",
+      cleaned
+    };
+  }
+  const validCharsRegex = /^[A-Za-z\u00C0-\u024F\u0400-\u04FF'\-\s]+$/;
+  if (!validCharsRegex.test(cleaned)) {
+    return {
+      valid: false,
+      error: "Ism va familiyada faqat harflar, tire (-) va tutuq belgisi (') bo'lishi mumkin.",
+      cleaned
+    };
+  }
+  const parts = cleaned.split(" ").filter(Boolean);
+  if (parts.length < 2) {
+    return {
+      valid: false,
+      error: "Iltimos, ism va familiyangizni to'liq kiriting (kamida ikkita so'z, masalan: Ali Valiyev).",
+      cleaned
+    };
+  }
+  const hasTooShortWord = parts.some((part) => part.replace(/['\-]/g, "").length < 2);
+  if (hasTooShortWord) {
+    return {
+      valid: false,
+      error: "Ism va familiya qismlari kamida 2 ta harfdan iborat bo'lishi lozim.",
+      cleaned
+    };
+  }
+  return { valid: true, cleaned };
+}
+function validateStudentAccessCode(raw) {
+  const cleaned = (raw || "").trim().toUpperCase();
+  if (cleaned.length < 4 || cleaned.length > 32) {
+    return {
+      valid: false,
+      error: "O'quvchi kirish kodi 4 tadan 32 tagacha belgidan iborat bo'lishi kerak.",
+      cleaned
+    };
+  }
+  if (!/^[A-Z0-9\-_]+$/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "O'quvchi kirish kodida faqat lotin harflari, raqamlar va tire (-) bo'lishi mumkin.",
+      cleaned
+    };
+  }
+  return { valid: true, cleaned };
+}
+function validateStrongAdminCode(rawAdminCode, currentStudentCode) {
+  const cleaned = (rawAdminCode || "").trim();
+  if (cleaned.length < 10) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodi kamida 10 ta belgidan iborat bo'lishi shart.",
+      cleaned
+    };
+  }
+  if (cleaned.length > 128) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodi 128 ta belgidan oshmasligi kerak.",
+      cleaned
+    };
+  }
+  if (!/[A-Z]/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodida kamida bitta bosh harf (A-Z) bo'lishi shart.",
+      cleaned
+    };
+  }
+  if (!/[a-z]/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodida kamida bitta kichik harf (a-z) bo'lishi shart.",
+      cleaned
+    };
+  }
+  if (!/[0-9]/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodida kamida bitta raqam (0-9) bo'lishi shart.",
+      cleaned
+    };
+  }
+  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?~`]/.test(cleaned)) {
+    return {
+      valid: false,
+      error: "Administrator maxfiy kodida kamida bitta maxsus belgi (!@#$%^&* va h.k.) bo'lishi shart.",
+      cleaned
+    };
+  }
+  if (currentStudentCode) {
+    const normAdmin = cleaned.toLowerCase();
+    const normStudent = currentStudentCode.trim().toLowerCase();
+    if (normStudent && (normAdmin === normStudent || normAdmin.includes(normStudent))) {
+      return {
+        valid: false,
+        error: "Xavfsizlik qoidasi: Administrator maxfiy kodi o'quvchi kirish kodi bilan bir xil bo'lishi yoki uni o'z ichiga olishi qat'iyan man etiladi!",
+        cleaned
+      };
+    }
+  }
+  return { valid: true, cleaned };
+}
+function uzbekSortKey(str) {
+  const s = normalizeStudentName(str);
+  return s.replace(/o'/g, "o\uFFFF1").replace(/g'/g, "g\uFFFF1").replace(/sh/g, "s\uFFFF2").replace(/ch/g, "c\uFFFF2");
+}
+function compareUzbekNames(a, b) {
+  const keyA = uzbekSortKey(a);
+  const keyB = uzbekSortKey(b);
+  if (keyA < keyB) return -1;
+  if (keyA > keyB) return 1;
+  return 0;
+}
+function formatDateUz(isoDate) {
+  if (!isoDate) return "";
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate.trim());
+  if (!match) return isoDate;
+  const [, year, month, day] = match;
+  return `${day}.${month}.${year}`;
+}
+function validateCollectionPeriodWindow(startDate, closingDate, referenceIsoDate) {
+  const today = referenceIsoDate || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  if (startDate && today < startDate) {
+    return {
+      valid: false,
+      open: false,
+      error: `Oylik to'lov muddatlarini qabul qilish ${formatDateUz(startDate)} sanasidan boshlanadi.`
+    };
+  }
+  if (closingDate && today > closingDate) {
+    return {
+      valid: false,
+      open: false,
+      error: `Ushbu oy uchun to'lov muddatlarini qabul qilish ${formatDateUz(closingDate)} sanasida yakunlangan.`
+    };
+  }
+  return { valid: true, open: true };
+}
+function validatePaymentDate(paymentDate, allowedStartDate, allowedEndDate) {
+  if (!paymentDate || typeof paymentDate !== "string") {
+    return { valid: false, error: "Iltimos, to'lov sanasini tanlang." };
+  }
+  const trimmed = paymentDate.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return { valid: false, error: "To'lov sanasi noto'g'ri formatda kiritilgan." };
+  }
+  const [y, m, d] = trimmed.split("-").map(Number);
+  const dateObj = new Date(Date.UTC(y, m - 1, d));
+  if (dateObj.getUTCFullYear() !== y || dateObj.getUTCMonth() + 1 !== m || dateObj.getUTCDate() !== d) {
+    return { valid: false, error: "Bunday sana mavjud emas." };
+  }
+  if (allowedStartDate && trimmed < allowedStartDate) {
+    return {
+      valid: false,
+      error: `To'lov sanasi ${formatDateUz(allowedStartDate)} dan oldin bo'lishi mumkin emas.`
+    };
+  }
+  if (allowedEndDate && trimmed > allowedEndDate) {
+    return {
+      valid: false,
+      error: `To'lov sanasi ${formatDateUz(allowedEndDate)} dan keyin bo'lishi mumkin emas.`
+    };
+  }
+  return { valid: true };
+}
+function sanitizeExcelSheetName(name, usedNames) {
+  const base = name.replace(/[\\/?*:[\]]/g, "_").trim().slice(0, 28) || "Guruh";
+  let candidate = base;
+  let counter = 2;
+  while (usedNames.has(candidate.toLowerCase())) {
+    candidate = `${base.slice(0, 25)}_${counter}`;
+    counter++;
+  }
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+}
+function buildExcelFilename(options) {
+  const cleanPart = (s) => standardizeUzbekApostrophes(s).replace(/'/g, "").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const periodPart = `${cleanPart(options.monthName)}_${options.year}`;
+  if (options.groupName) {
+    return `${cleanPart(options.groupName)}_${periodPart}.xlsx`;
+  }
+  if (options.teacherName) {
+    return `Oqituvchi_${cleanPart(options.teacherName)}_${periodPart}.xlsx`;
+  }
+  return `Tolov_hisoboti_${periodPart}.xlsx`;
 }
 
 // src/utils/excelExport.ts
@@ -3033,6 +2699,21 @@ async function createApiApp() {
     } catch (error) {
       console.error("Error generating Excel export:", error);
       res.status(500).json({ error: "Excel faylni yaratishda xatolik yuz berdi." });
+    }
+  });
+  app.post("/api/admin/clear-all-data", requireAdminAuth, (req, res) => {
+    try {
+      purgeAllTeacherAndGroupData(req.admin.id, req.admin.email);
+      res.json({
+        success: true,
+        message: "Barcha o'qituvchilar, guruhlar, ro'yxatlar va to'lov arizalari muvaffaqiyatli tozalandi.",
+        teachers: getAllTeachers(),
+        groups: getAllGroups(),
+        submissions: getAllSubmissions()
+      });
+    } catch (error) {
+      console.error("Error clearing data:", error);
+      res.status(500).json({ error: "Ma'lumotlarni tozalashda xatolik yuz berdi." });
     }
   });
   app.all("/api/*", (_req, res) => {

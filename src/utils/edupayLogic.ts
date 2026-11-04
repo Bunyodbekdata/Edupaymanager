@@ -268,7 +268,7 @@ export function validateCollectionPeriodWindow(
   startDate: string,
   closingDate: string,
   referenceIsoDate?: string
-): { valid: boolean; error?: string } {
+): { valid: boolean; open: boolean; error?: string } {
   const today =
     referenceIsoDate ||
     new Date().toISOString().slice(0, 10);
@@ -276,16 +276,18 @@ export function validateCollectionPeriodWindow(
   if (startDate && today < startDate) {
     return {
       valid: false,
+      open: false,
       error: `Oylik to'lov muddatlarini qabul qilish ${formatDateUz(startDate)} sanasidan boshlanadi.`,
     };
   }
   if (closingDate && today > closingDate) {
     return {
       valid: false,
+      open: false,
       error: `Ushbu oy uchun to'lov muddatlarini qabul qilish ${formatDateUz(closingDate)} sanasida yakunlangan.`,
     };
   }
-  return { valid: true };
+  return { valid: true, open: true };
 }
 
 /**
