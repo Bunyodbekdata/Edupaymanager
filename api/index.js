@@ -1361,13 +1361,15 @@ async function createApiApp() {
         });
       }
       const activePeriod = await getActiveCollectionPeriod();
-      const teachers = await getAllTeachers().filter((t) => t.status === "active").sort((a, b) => compareUzbekNames(a.full_name, b.full_name)).map((t) => ({
+      const rawTeachers = await getAllTeachers();
+      const teachers = rawTeachers.filter((t) => t.status === "active").sort((a, b) => compareUzbekNames(a.full_name, b.full_name)).map((t) => ({
         id: t.id,
         full_name: t.full_name,
         subject: t.subject
       }));
       const activeTeacherIds = new Set(teachers.map((t) => t.id));
-      const groups = await getAllGroups().filter((g) => g.status === "active" && activeTeacherIds.has(g.teacher_id)).sort((a, b) => compareUzbekNames(a.group_name, b.group_name)).map((g) => ({
+      const rawGroups = await getAllGroups();
+      const groups = rawGroups.filter((g) => g.status === "active" && activeTeacherIds.has(g.teacher_id)).sort((a, b) => compareUzbekNames(a.group_name, b.group_name)).map((g) => ({
         id: g.id,
         group_name: g.group_name,
         teacher_id: g.teacher_id,
