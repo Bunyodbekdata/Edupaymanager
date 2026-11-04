@@ -484,9 +484,9 @@ export async function createApiApp() {
         teachers,
         groups,
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error in GET /api/public/context:', error);
-      res.status(500).json({ error: "Server xatoligi yuz berdi. Iltimos, keyinroq urinib ko'ring." });
+      res.status(500).json({ error: error?.message || "Server xatoligi", stack: error?.stack });
     }
   });
 
