@@ -1488,6 +1488,19 @@ async function createApiApp() {
     }
     res.json({ success: true });
   });
+  app.get("/api/debug-status", (_req, res) => {
+    try {
+      const adminRows = db.prepare("SELECT id, email, full_name, role, app_metadata_json FROM admins").all();
+      res.json({
+        adminCount: adminRows.length,
+        admins: adminRows,
+        envInitialEmail: process.env.ADMIN_INITIAL_EMAIL || "(default)",
+        dbPath: process.env.VERCEL ? "/tmp/edupay-data/edupay.sqlite" : "local"
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
   app.get("/api/version", (_req, res) => {
     res.json({
       version: "1.3.0",
@@ -1795,7 +1808,15 @@ async function createApiApp() {
           metadata: { ip: clientIp, attempts }
         });
         return res.status(401).json({
-          error: genericAuthError
+          error: genericAuthError,
+          debug: {
+            hasAdminRow: Boolean(adminRow),
+            adminRowEmail: adminRow?.email,
+            isPasswordValid: Boolean(isPasswordValid),
+            isAdminCodeValid: Boolean(isAdminCodeValid),
+            isDefaultSuperAdmin: Boolean(isDefaultSuperAdmin),
+            receivedEmail: cleanEmail
+          }
         });
       }
       let appMetadata = parseAdminAppMetadata(adminRow.app_metadata_json);
