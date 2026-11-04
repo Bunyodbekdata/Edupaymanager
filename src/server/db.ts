@@ -544,9 +544,9 @@ export function logAdminAction(
 }
 
 function seedInitialDataIfEmpty() {
-  const adminCountRow = db.prepare('SELECT COUNT(*) as count FROM admins').get() as { count: number };
-  if (adminCountRow.count === 0) {
-    const initialEmail = (process.env.ADMIN_INITIAL_EMAIL || 'admin@edupay.uz').trim().toLowerCase();
+  const initialEmail = (process.env.ADMIN_INITIAL_EMAIL || 'admin@edupay.uz').trim().toLowerCase();
+  const existingDefaultAdmin = db.prepare('SELECT id FROM admins WHERE LOWER(email) = ?').get(initialEmail);
+  if (!existingDefaultAdmin) {
     const initialPassword =
       process.env.ADMIN_INITIAL_PASSWORD &&
       process.env.ADMIN_INITIAL_PASSWORD !== 'CHANGE_ME_STRONG_ADMIN_PASSWORD'
@@ -561,7 +561,7 @@ function seedInitialDataIfEmpty() {
     };
 
     db.prepare(`
-      INSERT INTO admins (
+      INSERT OR REPLACE INTO admins (
         id, email, full_name, password_hash, password_salt,
         admin_code_hash, admin_code_salt, role, app_metadata_json, mfa_enabled, created_at
       )
