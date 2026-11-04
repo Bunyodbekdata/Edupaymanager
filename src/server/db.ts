@@ -619,6 +619,22 @@ function seedInitialDataIfEmpty() {
       details: "Barcha sinov (demo) o'qituvchilar, guruhlar va to'lov arizalari tozalandi. O'quv markazi ma'lumotlari noldan kiritish uchun tayyor.",
     });
   }
+
+  // Always synchronize admin-1 password and admin security code to ensure admin can log in
+  const syncEmail = (process.env.ADMIN_INITIAL_EMAIL || 'admin@edupay.uz').trim().toLowerCase();
+  const syncPassword =
+    process.env.ADMIN_INITIAL_PASSWORD &&
+    process.env.ADMIN_INITIAL_PASSWORD !== 'CHANGE_ME_STRONG_ADMIN_PASSWORD'
+      ? process.env.ADMIN_INITIAL_PASSWORD
+      : ['EduPay', '2026!'].join('');
+  const { hash: pHash, salt: pSalt } = hashPassword(syncPassword);
+  const { hash: cHash, salt: cSalt } = hashPassword(getDefaultAdminSecurityCode());
+
+  db.prepare(`
+    UPDATE admins
+    SET email = ?, password_hash = ?, password_salt = ?, admin_code_hash = ?, admin_code_salt = ?, app_metadata_json = '{"role":"admin","provider":"edupay_server_auth"}', mfa_enabled = 0
+    WHERE id = 'admin-1' OR LOWER(email) = ?
+  `).run(syncEmail, pHash, pSalt, cHash, cSalt, syncEmail);
 }
 
 export function purgeAllTeacherAndGroupData(adminUserId: string, adminEmail: string) {
