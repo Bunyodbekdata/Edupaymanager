@@ -1730,19 +1730,14 @@ async function createApiApp() {
       }
       const adminRow = db.prepare(`SELECT * FROM admins WHERE LOWER(email) = ? LIMIT 1`).get(cleanEmail);
       const genericAuthError = "Elektron pochta, parol yoki maxfiy administrator kodi noto'g'ri.";
-      if (!adminRow || !verifyPassword(password, adminRow.password_hash, adminRow.password_salt) || !verifyAdminSecurityCode(adminRow.id, admin_code)) {
-        const attempts = recordFailedLoginAttempt(clientIp, cleanEmail);
-        logAdminAction({
-          adminUserId: adminRow?.id || "anonymous",
-          adminEmail: cleanEmail,
-          action: "LOGIN_FAILED",
-          affectedRecordId: adminRow?.id || null,
-          details: `Muvaffaqiyatsiz administrator kirish urinishi (#${attempts}).`,
-          metadata: { ip: clientIp, attempts }
-        });
-        return res.status(401).json({
-          error: genericAuthError
-        });
+      if (!adminRow) {
+        return res.status(401).json({ error: "ADMIN_NOT_FOUND" });
+      }
+      if (!verifyPassword(password, adminRow.password_hash, adminRow.password_salt)) {
+        return res.status(401).json({ error: "PASSWORD_MISMATCH" });
+      }
+      if (!verifyAdminSecurityCode(adminRow.id, admin_code)) {
+        return res.status(401).json({ error: "CODE_MISMATCH" });
       }
       const appMetadata = parseAdminAppMetadata(adminRow.app_metadata_json);
       if (!appMetadata || appMetadata.role !== "admin") {
