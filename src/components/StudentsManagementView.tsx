@@ -545,7 +545,18 @@ export const StudentsManagementView: React.FC<StudentsManagementViewProps> = ({
                             {rowNum}
                           </td>
                           <td className="py-3 px-4 font-semibold text-slate-900">
-                            {sub.student_full_name}
+                            <div className="flex flex-col">
+                              <span>{sub.student_full_name}</span>
+                              {sub.note && (
+                                <span
+                                  className="inline-flex items-center gap-1 text-[11px] font-normal text-amber-800 bg-amber-50 border border-amber-200/80 rounded px-1.5 py-0.5 mt-1 w-fit max-w-xs truncate"
+                                  title={sub.note}
+                                >
+                                  <span className="font-semibold text-amber-900">Izoh:</span>
+                                  <span className="truncate">{sub.note}</span>
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="py-3 px-4 text-slate-700">{teacherName}</td>
                           <td className="py-3 px-4 text-slate-700 font-medium">{groupName}</td>

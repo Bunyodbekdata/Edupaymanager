@@ -1215,7 +1215,8 @@ async function generateSubmissionsExcelBuffer(params) {
     { header: "O'quvchi ismi", key: "student_name", width: 34 },
     { header: "O'qituvchi", key: "teacher_name", width: 28 },
     { header: "Guruh", key: "group_name", width: 24 },
-    { header: "To'lov sanasi", key: "payment_date", width: 18 }
+    { header: "To'lov sanasi", key: "payment_date", width: 18 },
+    { header: "Izoh", key: "note", width: 32 }
   ];
   const mainHeader = mainSheet.getRow(1);
   mainHeader.height = 28;
@@ -1245,7 +1246,8 @@ async function generateSubmissionsExcelBuffer(params) {
       student_name: cleanStudentName(sub.student_full_name),
       teacher_name: teacherName,
       group_name: groupName,
-      payment_date: formatDateUz(sub.payment_date)
+      payment_date: formatDateUz(sub.payment_date),
+      note: sub.note || ""
     });
     row.height = 22;
     const isEven = (idx + 1) % 2 === 0;
@@ -1293,7 +1295,8 @@ async function generateSubmissionsExcelBuffer(params) {
     groupSheet.columns = [
       { header: "\u2116", key: "index", width: 8 },
       { header: "O'quvchi ismi va familiyasi", key: "student_name", width: 38 },
-      { header: "To'lov sanasi", key: "payment_date", width: 20 }
+      { header: "To'lov sanasi", key: "payment_date", width: 20 },
+      { header: "Izoh", key: "note", width: 32 }
     ];
     const grpHeader = groupSheet.getRow(1);
     grpHeader.height = 28;
@@ -1319,7 +1322,8 @@ async function generateSubmissionsExcelBuffer(params) {
       const row = groupSheet.addRow({
         index: idx + 1,
         student_name: cleanStudentName(sub.student_full_name),
-        payment_date: formatDateUz(sub.payment_date)
+        payment_date: formatDateUz(sub.payment_date),
+        note: sub.note || ""
       });
       row.height = 22;
       const isEven = (idx + 1) % 2 === 0;
@@ -1831,6 +1835,8 @@ async function createApiApp() {
     group_id: z.string().trim().min(1, "Iltimos, guruhni tanlang.").max(100),
     student_full_name: z.string().trim().min(1, "Iltimos, ism va familiyangizni kiriting.").max(120),
     payment_date: z.string().trim().min(1, "Iltimos, to'lov sanasini tanlang.").max(20),
+    note: z.string().trim().max(300, "Izoh 300 belgidan oshmasligi kerak.").optional(),
+    comment: z.string().trim().max(300, "Izoh 300 belgidan oshmasligi kerak.").optional(),
     student_access_code: z.string().trim().max(64).optional()
   }).strict();
   app.post("/api/public/submissions", (req, res) => {
@@ -1885,7 +1891,8 @@ async function createApiApp() {
       if (!windowCheck.valid) {
         return res.status(400).json({ error: windowCheck.error });
       }
-      const { teacher_id, group_id, student_full_name, payment_date } = parsed.data;
+      const { teacher_id, group_id, student_full_name, payment_date, note, comment } = parsed.data;
+      const submissionNote = (note || comment || "").trim().slice(0, 300);
       const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ? AND status = 'active'`).get(teacher_id);
       if (!teacher) {
         return res.status(400).json({
@@ -1941,7 +1948,7 @@ async function createApiApp() {
         cleanedName,
         normalizedName,
         payment_date,
-        "",
+        submissionNote,
         nowIso,
         nowIso
       );
@@ -1954,6 +1961,7 @@ async function createApiApp() {
           payment_date,
           formatted_payment_date: formatDateUz(payment_date),
           period_title: activePeriod.title,
+          note: submissionNote,
           created_at: nowIso
         }
       });

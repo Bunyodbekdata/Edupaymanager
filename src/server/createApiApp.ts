@@ -467,13 +467,15 @@ export async function createApiApp() {
     }
   });
 
-  // Strict schema: rejects any unexpected fields (e.g., id, collection_period_id, role, isAdmin, note)
+  // Strict schema: accepts required fields + optional note/comment and student_access_code
   const publicSubmissionSchema = z
     .object({
       teacher_id: z.string().trim().min(1, "Iltimos, o'qituvchini tanlang.").max(100),
       group_id: z.string().trim().min(1, 'Iltimos, guruhni tanlang.').max(100),
       student_full_name: z.string().trim().min(1, 'Iltimos, ism va familiyangizni kiriting.').max(120),
       payment_date: z.string().trim().min(1, "Iltimos, to'lov sanasini tanlang.").max(20),
+      note: z.string().trim().max(300, "Izoh 300 belgidan oshmasligi kerak.").optional(),
+      comment: z.string().trim().max(300, "Izoh 300 belgidan oshmasligi kerak.").optional(),
       student_access_code: z.string().trim().max(64).optional(),
     })
     .strict();
@@ -538,7 +540,8 @@ export async function createApiApp() {
         return res.status(400).json({ error: windowCheck.error });
       }
 
-      const { teacher_id, group_id, student_full_name, payment_date } = parsed.data;
+      const { teacher_id, group_id, student_full_name, payment_date, note, comment } = parsed.data;
+      const submissionNote = (note || comment || '').trim().slice(0, 300);
 
       // Validate teacher exists and is active
       const teacher = db
@@ -616,7 +619,7 @@ export async function createApiApp() {
         cleanedName,
         normalizedName,
         payment_date,
-        '',
+        submissionNote,
         nowIso,
         nowIso
       );
@@ -630,6 +633,7 @@ export async function createApiApp() {
           payment_date,
           formatted_payment_date: formatDateUz(payment_date),
           period_title: activePeriod.title,
+          note: submissionNote,
           created_at: nowIso,
         },
       });

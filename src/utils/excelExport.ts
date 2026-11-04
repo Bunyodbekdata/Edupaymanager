@@ -61,6 +61,7 @@ export async function generateSubmissionsExcelBuffer(
     { header: "O'qituvchi", key: 'teacher_name', width: 28 },
     { header: 'Guruh', key: 'group_name', width: 24 },
     { header: "To'lov sanasi", key: 'payment_date', width: 18 },
+    { header: 'Izoh', key: 'note', width: 32 },
   ];
 
   // Style Header Row (Row 1)
@@ -93,6 +94,7 @@ export async function generateSubmissionsExcelBuffer(
       teacher_name: teacherName,
       group_name: groupName,
       payment_date: formatDateUz(sub.payment_date),
+      note: sub.note || '',
     });
 
     row.height = 22;
@@ -161,6 +163,7 @@ export async function generateSubmissionsExcelBuffer(
       { header: '№', key: 'index', width: 8 },
       { header: "O'quvchi ismi va familiyasi", key: 'student_name', width: 38 },
       { header: "To'lov sanasi", key: 'payment_date', width: 20 },
+      { header: 'Izoh', key: 'note', width: 32 },
     ];
 
     const grpHeader = groupSheet.getRow(1);
@@ -189,6 +192,7 @@ export async function generateSubmissionsExcelBuffer(
         index: idx + 1,
         student_name: cleanStudentName(sub.student_full_name),
         payment_date: formatDateUz(sub.payment_date),
+        note: sub.note || '',
       });
       row.height = 22;
       const isEven = (idx + 1) % 2 === 0;

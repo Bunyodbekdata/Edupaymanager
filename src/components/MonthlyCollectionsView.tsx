@@ -564,7 +564,18 @@ export const MonthlyCollectionsView: React.FC<MonthlyCollectionsViewProps> = ({
                           {idx + 1}
                         </td>
                         <td className="py-2 px-3 font-semibold text-slate-900">
-                          {s.student_full_name}
+                          <div className="flex flex-col">
+                            <span>{s.student_full_name}</span>
+                            {s.note && (
+                              <span
+                                className="inline-flex items-center gap-1 text-[11px] font-normal text-amber-800 bg-amber-50 border border-amber-200/80 rounded px-1.5 py-0.5 mt-0.5 w-fit max-w-xs truncate"
+                                title={s.note}
+                              >
+                                <span className="font-semibold text-amber-900">Izoh:</span>
+                                <span className="truncate">{s.note}</span>
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="py-2 px-3 text-slate-600">
                           {teacherMap.get(s.teacher_id)?.full_name}

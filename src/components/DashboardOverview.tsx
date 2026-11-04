@@ -143,6 +143,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
     setEditName(sub.student_full_name);
     setEditGroupId(sub.group_id);
     setEditDate(sub.payment_date);
+    setEditNote(sub.note || '');
     setEditError(null);
   };
 
@@ -163,6 +164,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           student_full_name: editName,
           group_id: editGroupId,
           payment_date: editDate,
+          note: editNote.trim(),
         }),
       });
       const data = await res.json();
@@ -511,7 +513,18 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                         {rowIndex}
                       </td>
                       <td className="py-3 px-4 font-semibold text-slate-900">
-                        {sub.student_full_name}
+                        <div className="flex flex-col">
+                          <span>{sub.student_full_name}</span>
+                          {sub.note && (
+                            <span
+                              className="inline-flex items-center gap-1 text-[11px] font-normal text-amber-800 bg-amber-50 border border-amber-200/80 rounded px-1.5 py-0.5 mt-1 w-fit max-w-xs truncate"
+                              title={sub.note}
+                            >
+                              <span className="font-semibold text-amber-900">Izoh:</span>
+                              <span className="truncate">{sub.note}</span>
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-3 px-4 text-slate-700">
                         {teacherMap.get(sub.teacher_id)?.full_name || '—'}
@@ -653,6 +666,21 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                   value={editDate}
                   onChange={(e) => setEditDate(e.target.value)}
                   className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl text-sm font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label htmlFor="dash-edit-note" className="block text-xs font-semibold text-slate-700">
+                  Izoh (ixtiyoriy)
+                </label>
+                <textarea
+                  id="dash-edit-note"
+                  rows={2}
+                  maxLength={300}
+                  value={editNote}
+                  onChange={(e) => setEditNote(e.target.value)}
+                  placeholder="To'lov bo'yicha izoh..."
+                  className="w-full px-3.5 py-2 border border-slate-300 rounded-xl text-sm resize-none"
                 />
               </div>
 

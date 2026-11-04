@@ -12,6 +12,7 @@ import {
   KeyRound,
   LogOut,
   Lock,
+  MessageSquare,
 } from 'lucide-react';
 import { PublicAppContext } from '../types/edupay';
 import {
@@ -29,6 +30,7 @@ interface SubmittedResult {
   payment_date: string;
   formatted_payment_date: string;
   period_title: string;
+  note?: string;
 }
 
 interface PublicStudentFormProps {
@@ -83,6 +85,7 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
   const [studentFullName, setStudentFullName] = useState<string>('');
   const [paymentDate, setPaymentDate] = useState<string>('');
+  const [note, setNote] = useState<string>('');
 
   // Submission state
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -302,6 +305,7 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({
           group_id: selectedGroupId,
           student_full_name: nameCheck.cleaned,
           payment_date: paymentDate,
+          note: note.trim() || undefined,
         }),
       });
 
@@ -341,6 +345,7 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({
     setSubmittedData(null);
     setStudentFullName('');
     setPaymentDate('');
+    setNote('');
     setSelectedGroupId('');
     setFormError(null);
     setDuplicateWarning(null);
@@ -550,12 +555,20 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({
                     {submittedData.group_name}
                   </span>
                 </div>
-                <div className="py-2.5 last:pb-0 flex items-center justify-between gap-4">
+                <div className="py-2.5 flex items-center justify-between gap-4">
                   <span className="text-slate-500">To&apos;lov sanasi:</span>
                   <span className="font-mono font-semibold text-sky-700 tabular-nums text-right">
                     {submittedData.formatted_payment_date}
                   </span>
                 </div>
+                {submittedData.note && (
+                  <div className="py-2.5 last:pb-0 flex items-start justify-between gap-4">
+                    <span className="text-slate-500 shrink-0">Izoh:</span>
+                    <span className="text-slate-800 text-xs text-right italic font-medium">
+                      &ldquo;{submittedData.note}&rdquo;
+                    </span>
+                  </div>
+                )}
               </div>
 
               <button
@@ -832,6 +845,37 @@ export const PublicStudentForm: React.FC<PublicStudentFormProps> = ({
                       </div>
                     </div>
                   )}
+                </div>
+
+                {/* Field 5: Izoh (ixtiyoriy) */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label
+                      htmlFor="student-note-input"
+                      className="block text-sm font-semibold text-slate-800"
+                    >
+                      5. Izoh / Qo&apos;shimcha ma&apos;lumot{' '}
+                      <span className="text-xs font-normal text-slate-500">(ixtiyoriy)</span>
+                    </label>
+                    <span className="text-xs text-slate-400 font-mono">
+                      {note.length}/300
+                    </span>
+                  </div>
+                  <div className="relative">
+                    <MessageSquare className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5 pointer-events-none" />
+                    <textarea
+                      id="student-note-input"
+                      rows={2}
+                      maxLength={300}
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      placeholder="Masalan: To'lov qilingan, oy o'rtasida darsga kelganman yoki to'lov bo'yicha boshqa izoh..."
+                      className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-300 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-600 resize-none"
+                    />
+                  </div>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    To&apos;lovni allaqachon to&apos;lagan bo&apos;lsangiz yoki darsga oy o&apos;rtasidan qo&apos;shilgan bo&apos;lsangiz, bu yerga qisqacha izoh yozib qoldirishingiz mumkin.
+                  </p>
                 </div>
 
                 <div className="pt-2">

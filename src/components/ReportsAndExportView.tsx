@@ -468,7 +468,16 @@ export const ReportsAndExportView: React.FC<ReportsAndExportViewProps> = ({
                           {i + 1}
                         </td>
                         <td className="py-2 px-3 font-medium text-slate-900 border-r border-slate-200">
-                          {sub.student_full_name}
+                          <div>{sub.student_full_name}</div>
+                          {sub.note && (
+                            <div
+                              className="text-[11px] text-amber-800 bg-amber-50/80 border border-amber-200/60 rounded px-1.5 py-0.5 mt-1 inline-block max-w-xs truncate"
+                              title={sub.note}
+                            >
+                              <span className="font-semibold text-amber-900 mr-1">Izoh:</span>
+                              {sub.note}
+                            </div>
+                          )}
                         </td>
                         <td className="py-2 px-3 text-center font-mono font-semibold text-slate-900 tabular-nums">
                           {formatDateUz(sub.payment_date)}
