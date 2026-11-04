@@ -134,11 +134,11 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
 
   const supabaseAuthStatus = await ensureSupabaseAuthAdmin(configuredEmail, configuredPassword);
 
-  const existingByEmail = db
+  const existingByEmail = (await db
     .prepare(
       `SELECT id, email, full_name, role, app_metadata_json, admin_code_hash, admin_code_salt, created_at FROM admins WHERE LOWER(email) = ? LIMIT 1`
     )
-    .get(configuredEmail) as
+    .get(configuredEmail)) as
     | {
         id: string;
         email: string;
@@ -153,11 +153,11 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
 
   const fallbackExistingAdmin =
     existingByEmail ||
-    (db
+    ((await db
       .prepare(
         `SELECT id, email, full_name, role, app_metadata_json, admin_code_hash, admin_code_salt, created_at FROM admins ORDER BY created_at ASC LIMIT 1`
       )
-      .get() as
+      .get()) as
       | {
           id: string;
           email: string;
@@ -174,7 +174,7 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
     // Ensure strong admin security code hash is present without overwriting an existing one
     if (!fallbackExistingAdmin.admin_code_hash || !fallbackExistingAdmin.admin_code_salt) {
       const { hash: codeHash, salt: codeSalt } = hashPassword(getDefaultAdminSecurityCode());
-      db.prepare(`UPDATE admins SET admin_code_hash = ?, admin_code_salt = ? WHERE id = ?`).run(
+      await db.prepare(`UPDATE admins SET admin_code_hash = ?, admin_code_salt = ? WHERE id = ?`).run(
         codeHash,
         codeSalt,
         fallbackExistingAdmin.id
@@ -198,7 +198,7 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
       role: 'admin',
       provider: 'edupay_server_auth',
     };
-    db.prepare(`UPDATE admins SET app_metadata_json = ? WHERE id = ?`).run(
+    await db.prepare(`UPDATE admins SET app_metadata_json = ? WHERE id = ?`).run(
       JSON.stringify(authoritativeMetadata),
       fallbackExistingAdmin.id
     );
@@ -233,7 +233,7 @@ export async function verifyAndBootstrapInitialAdmin(): Promise<AdminBootstrapVe
   const newAdminId = 'admin-1';
   const nowIso = new Date().toISOString();
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO admins (
       id, email, full_name, password_hash, password_salt,
       admin_code_hash, admin_code_salt, role, app_metadata_json, mfa_enabled, created_at

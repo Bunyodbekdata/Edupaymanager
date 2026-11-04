@@ -5,131 +5,39 @@ import * as dotenv from "dotenv";
 import { z } from "zod";
 
 // src/server/db.ts
-import { DatabaseSync } from "node:sqlite";
+import { createClient } from "@libsql/client";
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-var DATA_DIR = process.env.VERCEL ? path.join("/tmp", "edupay-data") : path.resolve(process.cwd(), "data");
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+var TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL || "libsql://edupay-bunyodbekdata.aws-eu-central-1.turso.io";
+var TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN || "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTM3Nzk2NTIsImlkIjoiMDFhMWE1OTctZTcwMS03M2M2LTk5MzEtNTgyN2M3NWMxNGQ5Iiwia2lkIjoibGNfNTZ1VFhmallZUkVTYmhKanhhWHdOWmVyUlVSTTV6MkhDOTBMOVVxSSIsInJpZCI6ImNkNjlmYjI1LWMwOGItNDg2MS1hNGVkLWZiNjIzOTg3M2Q1MSJ9.7dPCtdayEHPFG9psYRVJDwOq0xWdWsseNu1_FT82eGsCRaVMu6luZRmTHpxfHrz05L05oh15If5aW5S1oChbCw";
+var dbClient = createClient({
+  url: TURSO_DATABASE_URL,
+  authToken: TURSO_AUTH_TOKEN
+});
+function sanitizeArgs(args) {
+  const flatArgs = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+  return flatArgs.map((val) => val === void 0 ? null : val);
 }
-var DB_PATH = path.join(DATA_DIR, "edupay.sqlite");
-var db = new DatabaseSync(DB_PATH);
-db.exec("PRAGMA journal_mode = WAL;");
-db.exec("PRAGMA foreign_keys = ON;");
-db.exec(`
-  CREATE TABLE IF NOT EXISTS admins (
-    id TEXT PRIMARY KEY,
-    email TEXT NOT NULL UNIQUE,
-    full_name TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    password_salt TEXT NOT NULL,
-    admin_code_hash TEXT NOT NULL DEFAULT '',
-    admin_code_salt TEXT NOT NULL DEFAULT '',
-    role TEXT NOT NULL DEFAULT 'super_admin',
-    app_metadata_json TEXT NOT NULL DEFAULT '{"role":"admin","provider":"edupay_server_auth"}',
-    totp_secret TEXT DEFAULT NULL,
-    mfa_enabled INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS admin_sessions (
-    token TEXT PRIMARY KEY,
-    admin_id TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS student_sessions (
-    token TEXT PRIMARY KEY,
-    role TEXT NOT NULL DEFAULT 'student',
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS access_control_config (
-    id TEXT PRIMARY KEY,
-    student_code_display TEXT NOT NULL,
-    student_code_hash TEXT NOT NULL,
-    student_code_salt TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS teachers (
-    id TEXT PRIMARY KEY,
-    full_name TEXT NOT NULL,
-    subject TEXT DEFAULT '',
-    phone TEXT DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'active',
-    created_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS groups (
-    id TEXT PRIMARY KEY,
-    group_name TEXT NOT NULL,
-    teacher_id TEXT NOT NULL,
-    schedule_info TEXT DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'active',
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (teacher_id) REFERENCES teachers(id) ON DELETE RESTRICT
-  );
-
-  CREATE TABLE IF NOT EXISTS collection_periods (
-    id TEXT PRIMARY KEY,
-    month_name TEXT NOT NULL,
-    month_number INTEGER NOT NULL,
-    year INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    start_date TEXT NOT NULL,
-    closing_date TEXT NOT NULL,
-    allowed_payment_start_date TEXT NOT NULL,
-    allowed_payment_end_date TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'inactive',
-    created_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS submissions (
-    id TEXT PRIMARY KEY,
-    collection_period_id TEXT NOT NULL,
-    teacher_id TEXT NOT NULL,
-    group_id TEXT NOT NULL,
-    student_full_name TEXT NOT NULL,
-    normalized_student_name TEXT NOT NULL,
-    payment_date TEXT NOT NULL,
-    note TEXT DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY (collection_period_id) REFERENCES collection_periods(id) ON DELETE RESTRICT,
-    FOREIGN KEY (teacher_id) REFERENCES teachers(id) ON DELETE RESTRICT,
-    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE RESTRICT
-  );
-
-  CREATE TABLE IF NOT EXISTS student_rosters (
-    id TEXT PRIMARY KEY,
-    group_id TEXT NOT NULL UNIQUE,
-    student_names_json TEXT NOT NULL DEFAULT '[]',
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS audit_logs (
-    id TEXT PRIMARY KEY,
-    admin_user_id TEXT NOT NULL DEFAULT 'system',
-    admin_email TEXT NOT NULL,
-    action TEXT NOT NULL,
-    affected_record_id TEXT DEFAULT NULL,
-    details TEXT NOT NULL,
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_groups_teacher_id ON groups(teacher_id);
-  CREATE INDEX IF NOT EXISTS idx_submissions_period_id ON submissions(collection_period_id);
-  CREATE INDEX IF NOT EXISTS idx_submissions_teacher_id ON submissions(teacher_id);
-  CREATE INDEX IF NOT EXISTS idx_submissions_group_id ON submissions(group_id);
-  CREATE INDEX IF NOT EXISTS idx_submissions_duplicate_lookup ON submissions(collection_period_id, group_id, normalized_student_name);
-`);
+var db = {
+  prepare(sql) {
+    return {
+      async get(...args) {
+        const rs = await dbClient.execute({ sql, args: sanitizeArgs(args) });
+        return rs.rows[0] || void 0;
+      },
+      async all(...args) {
+        const rs = await dbClient.execute({ sql, args: sanitizeArgs(args) });
+        return rs.rows;
+      },
+      async run(...args) {
+        const rs = await dbClient.execute({ sql, args: sanitizeArgs(args) });
+        return { changes: rs.rowsAffected, lastInsertRowid: rs.lastInsertRowid };
+      }
+    };
+  },
+  async exec(sql) {
+    await dbClient.executeMultiple(sql);
+  }
+};
 function hashPassword(password, salt) {
   const usedSalt = salt || crypto.randomBytes(16).toString("hex");
   const hash = crypto.scryptSync(password, usedSalt, 64).toString("hex");
@@ -144,79 +52,35 @@ function verifyPassword(password, storedHash, storedSalt) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 function getDefaultStudentAccessCode() {
-  const envCode = (process.env.STUDENT_ACCESS_CODE || "").trim().toUpperCase();
-  return envCode.length >= 4 ? envCode : "EDU-2026";
+  const envCode = process.env.STUDENT_ACCESS_CODE?.trim();
+  return envCode && envCode.length >= 4 ? envCode : "EDU-2026";
 }
 function getDefaultAdminSecurityCode() {
-  const envCode = (process.env.ADMIN_SECURITY_CODE || "").trim();
-  if (envCode.length >= 10 && envCode !== "CHANGE_ME_STRONG_ADMIN_SECURITY_CODE_MIN_10_CHARS") {
+  const envCode = process.env.ADMIN_SECURITY_CODE?.trim();
+  if (envCode && envCode.length >= 8 && envCode !== "CHANGE_ME_STRONG_ADMIN_SECURITY_CODE_MIN_10_CHARS") {
     return envCode;
   }
   return ["ADM#EduPay", "$2026!Key"].join("");
 }
-function ensureSecurityColumnsAndAccessCodes() {
-  const adminCols = db.prepare(`PRAGMA table_info(admins)`).all();
-  const adminColNames = new Set(adminCols.map((c) => c.name));
-  if (!adminColNames.has("app_metadata_json")) {
-    db.exec(
-      `ALTER TABLE admins ADD COLUMN app_metadata_json TEXT NOT NULL DEFAULT '{"role":"admin","provider":"edupay_server_auth"}'`
-    );
-  }
-  if (!adminColNames.has("totp_secret")) {
-    db.exec(`ALTER TABLE admins ADD COLUMN totp_secret TEXT DEFAULT NULL`);
-  }
-  if (!adminColNames.has("mfa_enabled")) {
-    db.exec(`ALTER TABLE admins ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0`);
-  }
-  if (!adminColNames.has("admin_code_hash")) {
-    db.exec(`ALTER TABLE admins ADD COLUMN admin_code_hash TEXT NOT NULL DEFAULT ''`);
-  }
-  if (!adminColNames.has("admin_code_salt")) {
-    db.exec(`ALTER TABLE admins ADD COLUMN admin_code_salt TEXT NOT NULL DEFAULT ''`);
-  }
-  const auditCols = db.prepare(`PRAGMA table_info(audit_logs)`).all();
-  const auditColNames = new Set(auditCols.map((c) => c.name));
-  if (!auditColNames.has("admin_user_id")) {
-    db.exec(`ALTER TABLE audit_logs ADD COLUMN admin_user_id TEXT NOT NULL DEFAULT 'system'`);
-  }
-  if (!auditColNames.has("affected_record_id")) {
-    db.exec(`ALTER TABLE audit_logs ADD COLUMN affected_record_id TEXT DEFAULT NULL`);
-  }
-  if (!auditColNames.has("metadata_json")) {
-    db.exec(`ALTER TABLE audit_logs ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'`);
-  }
-  const existingConfig = db.prepare(`SELECT id FROM access_control_config WHERE id = 'default' LIMIT 1`).get();
-  if (!existingConfig) {
-    const initialStudentCode = getDefaultStudentAccessCode();
-    const { hash, salt } = hashPassword(initialStudentCode.toUpperCase());
-    db.prepare(`
-      INSERT INTO access_control_config (id, student_code_display, student_code_hash, student_code_salt, updated_at)
-      VALUES ('default', ?, ?, ?, ?)
-    `).run(initialStudentCode, hash, salt, (/* @__PURE__ */ new Date()).toISOString());
-  }
-  const adminsMissingCode = db.prepare(
-    `SELECT id FROM admins WHERE admin_code_hash IS NULL OR admin_code_hash = '' OR admin_code_salt IS NULL OR admin_code_salt = ''`
-  ).all();
-  if (adminsMissingCode.length > 0) {
-    const defaultAdminCode = getDefaultAdminSecurityCode();
-    const { hash, salt } = hashPassword(defaultAdminCode);
-    const updateStmt = db.prepare(
-      `UPDATE admins SET admin_code_hash = ?, admin_code_salt = ? WHERE id = ?`
-    );
-    for (const row of adminsMissingCode) {
-      updateStmt.run(hash, salt, row.id);
+var studentAccessCodeCache = getDefaultStudentAccessCode();
+async function ensureSecurityColumnsAndAccessCodes() {
+  try {
+    const row = await db.prepare(`SELECT student_code_display FROM access_control_config WHERE id = 'default' LIMIT 1`).get();
+    if (row?.student_code_display) {
+      studentAccessCodeCache = row.student_code_display;
+    } else {
+      const initialCode = getDefaultStudentAccessCode();
+      const { hash, salt } = hashPassword(initialCode.toUpperCase());
+      await db.prepare(`
+        INSERT OR REPLACE INTO access_control_config (id, student_code_display, student_code_hash, student_code_salt, updated_at)
+        VALUES ('default', ?, ?, ?, ?)
+      `).run(initialCode, hash, salt, (/* @__PURE__ */ new Date()).toISOString());
+      studentAccessCodeCache = initialCode;
     }
+  } catch (err) {
+    console.warn("Notice in ensureSecurityColumnsAndAccessCodes:", err);
   }
-  const initialPassword = process.env.ADMIN_INITIAL_PASSWORD && process.env.ADMIN_INITIAL_PASSWORD !== "CHANGE_ME_STRONG_ADMIN_PASSWORD" ? process.env.ADMIN_INITIAL_PASSWORD : ["EduPay", "2026!"].join("");
-  const { hash: pwdHash, salt: pwdSalt } = hashPassword(initialPassword);
-  const { hash: codeHash, salt: codeSalt } = hashPassword(getDefaultAdminSecurityCode());
-  db.prepare(`
-    UPDATE admins
-    SET password_hash = ?, password_salt = ?, admin_code_hash = ?, admin_code_salt = ?, app_metadata_json = '{"role":"admin","provider":"edupay_server_auth"}'
-    WHERE id = 'admin-1'
-  `).run(pwdHash, pwdSalt, codeHash, codeSalt);
 }
-ensureSecurityColumnsAndAccessCodes();
 var BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 function generateTotpSecret(length = 32) {
   const bytes = crypto.randomBytes(length);
@@ -227,67 +91,68 @@ function generateTotpSecret(length = 32) {
   return secret;
 }
 function decodeBase32(base32) {
-  const cleaned = base32.toUpperCase().replace(/=+$/, "").replace(/[^A-Z2-7]/g, "");
+  const cleaned = base32.toUpperCase().replace(/=+$/, "").replace(/\s+/g, "");
+  let bits = 0;
+  let value = 0;
   const bytes = [];
-  let buffer = 0;
-  let bitsLeft = 0;
   for (let i = 0; i < cleaned.length; i++) {
-    const val = BASE32_ALPHABET.indexOf(cleaned[i]);
-    if (val === -1) continue;
-    buffer = buffer << 5 | val;
-    bitsLeft += 5;
-    if (bitsLeft >= 8) {
-      bitsLeft -= 8;
-      bytes.push(buffer >>> bitsLeft & 255);
-      buffer &= (1 << bitsLeft) - 1;
+    const idx = BASE32_ALPHABET.indexOf(cleaned[i]);
+    if (idx === -1) continue;
+    value = value << 5 | idx;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push(value >>> bits - 8 & 255);
+      bits -= 8;
     }
   }
   return Buffer.from(bytes);
 }
 function generateTotpCode(secret, timeStepOffset = 0) {
-  const counter = Math.floor(Date.now() / 1e3 / 30) + timeStepOffset;
+  const timeStep = 30;
+  const epoch = Math.floor(Date.now() / 1e3);
+  const counter = Math.floor(epoch / timeStep) + timeStepOffset;
   const counterBuf = Buffer.alloc(8);
-  counterBuf.writeBigInt64BE(BigInt(counter), 0);
+  counterBuf.writeBigInt64BE(BigInt(counter));
   const key = decodeBase32(secret);
   const hmac = crypto.createHmac("sha1", key).update(counterBuf).digest();
   const offset = hmac[hmac.length - 1] & 15;
-  const binary = (hmac[offset] & 127) << 24 | (hmac[offset + 1] & 255) << 16 | (hmac[offset + 2] & 255) << 8 | hmac[offset + 3] & 255;
-  return String(binary % 1e6).padStart(6, "0");
+  const codeInt = (hmac[offset] & 127) << 24 | (hmac[offset + 1] & 255) << 16 | (hmac[offset + 2] & 255) << 8 | hmac[offset + 3] & 255;
+  const otp = codeInt % 1e6;
+  return otp.toString().padStart(6, "0");
 }
 function verifyTotpCode(secret, code) {
-  if (!secret || !/^\d{6}$/.test(code.trim())) return false;
-  const cleanCode = code.trim();
-  for (const offset of [-1, 0, 1]) {
-    if (generateTotpCode(secret, offset) === cleanCode) {
+  if (!secret || !code) return false;
+  const trimmedCode = code.trim().replace(/\s+/g, "");
+  if (trimmedCode.length !== 6) return false;
+  for (let offset = -1; offset <= 1; offset++) {
+    const expected = generateTotpCode(secret, offset);
+    if (crypto.timingSafeEqual(Buffer.from(trimmedCode), Buffer.from(expected))) {
       return true;
     }
   }
   return false;
 }
 function getStudentAccessCode() {
-  const row = db.prepare(`SELECT student_code_display FROM access_control_config WHERE id = 'default' LIMIT 1`).get();
-  return row?.student_code_display || getDefaultStudentAccessCode();
+  return studentAccessCodeCache || getDefaultStudentAccessCode();
 }
 function verifyStudentAccessCode(inputCode) {
   if (!inputCode || typeof inputCode !== "string") return false;
   const normalized = inputCode.trim().toUpperCase();
   if (normalized.length < 4) return false;
-  const row = db.prepare(
-    `SELECT student_code_hash, student_code_salt FROM access_control_config WHERE id = 'default' LIMIT 1`
-  ).get();
-  if (!row) return false;
-  return verifyPassword(normalized, row.student_code_hash, row.student_code_salt);
+  const current = getStudentAccessCode().toUpperCase();
+  return normalized === current;
 }
-function updateStudentAccessCode(newCode) {
+async function updateStudentAccessCode(newCode) {
   const cleaned = newCode.trim().toUpperCase();
   const { hash, salt } = hashPassword(cleaned);
   const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-  db.prepare(`
+  await db.prepare(`
     UPDATE access_control_config
     SET student_code_display = ?, student_code_hash = ?, student_code_salt = ?, updated_at = ?
     WHERE id = 'default'
   `).run(cleaned, hash, salt, nowIso);
-  db.prepare(`DELETE FROM student_sessions`).run();
+  studentAccessCodeCache = cleaned;
+  await db.prepare(`DELETE FROM student_sessions`).run();
   return cleaned;
 }
 var SESSION_HMAC_SECRET = process.env.SESSION_SECRET || "edupay-serverless-hmac-secret-2026-v1";
@@ -325,26 +190,19 @@ function createStudentSession() {
     nonce: crypto.randomBytes(8).toString("hex")
   });
   const token = `stu_${signed}`;
-  db.prepare(`DELETE FROM student_sessions WHERE expires_at < ?`).run(now.toISOString());
+  db.prepare(`DELETE FROM student_sessions WHERE expires_at < ?`).run(now.toISOString()).catch(() => {
+  });
   db.prepare(`
     INSERT INTO student_sessions (token, role, expires_at, created_at)
     VALUES (?, 'student', ?, ?)
-  `).run(token, expiresAt, now.toISOString());
+  `).run(token, expiresAt, now.toISOString()).catch(() => {
+  });
   return { token, expiresAt };
 }
 function verifyStudentSessionToken(token) {
   if (!token || typeof token !== "string" || !token.startsWith("stu_")) return false;
   const trimmed = token.trim();
   if (revokedSessionTokens.has(trimmed)) return false;
-  const row = db.prepare(`SELECT token, role, expires_at FROM student_sessions WHERE token = ? LIMIT 1`).get(trimmed);
-  if (row) {
-    if (row.role !== "student") return false;
-    if (new Date(row.expires_at).getTime() < Date.now()) {
-      db.prepare(`DELETE FROM student_sessions WHERE token = ?`).run(trimmed);
-      return false;
-    }
-    return true;
-  }
   const parsed = verifySignedTokenPayload(
     trimmed.slice(4)
   );
@@ -357,9 +215,10 @@ function deleteStudentSession(token) {
   if (!token) return;
   const trimmed = token.trim();
   revokedSessionTokens.add(trimmed);
-  db.prepare(`DELETE FROM student_sessions WHERE token = ?`).run(trimmed);
+  db.prepare(`DELETE FROM student_sessions WHERE token = ?`).run(trimmed).catch(() => {
+  });
 }
-function verifyAdminSecurityCode(adminId, inputCode) {
+async function verifyAdminSecurityCode(adminId, inputCode) {
   if (!adminId || !inputCode || typeof inputCode !== "string") return false;
   const trimmed = inputCode.trim();
   if (trimmed.length < 8) return false;
@@ -367,52 +226,45 @@ function verifyAdminSecurityCode(adminId, inputCode) {
   if (trimmed === defaultCode || trimmed === "ADM#EduPay$2026!Key" || trimmed === "ADM#EduPay$2026!") {
     return true;
   }
-  const row = db.prepare(`SELECT admin_code_hash, admin_code_salt FROM admins WHERE id = ? LIMIT 1`).get(adminId);
+  const row = await db.prepare(`SELECT admin_code_hash, admin_code_salt FROM admins WHERE id = ? LIMIT 1`).get(adminId);
   if (!row || !row.admin_code_hash || !row.admin_code_salt) return false;
   return verifyPassword(trimmed, row.admin_code_hash, row.admin_code_salt);
 }
-function updateAdminSecurityCode(adminId, newAdminCode) {
+async function updateAdminSecurityCode(adminId, newAdminCode) {
   const cleaned = newAdminCode.trim();
   const { hash, salt } = hashPassword(cleaned);
-  db.prepare(`UPDATE admins SET admin_code_hash = ?, admin_code_salt = ? WHERE id = ?`).run(
+  await db.prepare(`UPDATE admins SET admin_code_hash = ?, admin_code_salt = ? WHERE id = ?`).run(
     hash,
     salt,
     adminId
   );
 }
 function logAdminAction(adminEmailOrInput, action, details, affectedRecordId, metadata) {
-  const stmt = db.prepare(`
+  const isInputObj = typeof adminEmailOrInput === "object";
+  const adminUserId = isInputObj ? adminEmailOrInput.adminUserId || "system" : "admin-1";
+  const adminEmail = isInputObj ? adminEmailOrInput.adminEmail : adminEmailOrInput;
+  const act = isInputObj ? adminEmailOrInput.action : action || "UNKNOWN_ACTION";
+  const affId = isInputObj ? adminEmailOrInput.affectedRecordId ?? null : affectedRecordId ?? null;
+  const det = isInputObj ? adminEmailOrInput.details : details || "";
+  const meta = isInputObj ? adminEmailOrInput.metadata || {} : metadata || {};
+  db.prepare(`
     INSERT INTO audit_logs (
       id, admin_user_id, admin_email, action, affected_record_id, details, metadata_json, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  if (typeof adminEmailOrInput === "object") {
-    stmt.run(
-      crypto.randomUUID(),
-      adminEmailOrInput.adminUserId || "system",
-      adminEmailOrInput.adminEmail,
-      adminEmailOrInput.action,
-      adminEmailOrInput.affectedRecordId ?? null,
-      adminEmailOrInput.details,
-      JSON.stringify(adminEmailOrInput.metadata || {}),
-      (/* @__PURE__ */ new Date()).toISOString()
-    );
-    return;
-  }
-  stmt.run(
+  `).run(
     crypto.randomUUID(),
-    "admin-1",
-    adminEmailOrInput,
-    action || "UNKNOWN_ACTION",
-    affectedRecordId ?? null,
-    details || "",
-    JSON.stringify(metadata || {}),
+    adminUserId,
+    adminEmail,
+    act,
+    affId,
+    det,
+    JSON.stringify(meta),
     (/* @__PURE__ */ new Date()).toISOString()
-  );
+  ).catch((err) => console.error("Audit log write error:", err));
 }
-function seedInitialDataIfEmpty() {
+async function seedInitialDataIfEmpty() {
   const initialEmail = (process.env.ADMIN_INITIAL_EMAIL || "admin@edupay.uz").trim().toLowerCase();
-  const existingDefaultAdmin = db.prepare("SELECT id FROM admins WHERE LOWER(email) = ?").get(initialEmail);
+  const existingDefaultAdmin = await db.prepare("SELECT id FROM admins WHERE LOWER(email) = ?").get(initialEmail);
   if (!existingDefaultAdmin) {
     const initialPassword = process.env.ADMIN_INITIAL_PASSWORD && process.env.ADMIN_INITIAL_PASSWORD !== "CHANGE_ME_STRONG_ADMIN_PASSWORD" ? process.env.ADMIN_INITIAL_PASSWORD : ["EduPay", "2026!"].join("");
     const { hash, salt } = hashPassword(initialPassword);
@@ -422,7 +274,7 @@ function seedInitialDataIfEmpty() {
       role: "admin",
       provider: "edupay_server_auth"
     };
-    db.prepare(`
+    await db.prepare(`
       INSERT OR REPLACE INTO admins (
         id, email, full_name, password_hash, password_salt,
         admin_code_hash, admin_code_salt, role, app_metadata_json, mfa_enabled, created_at
@@ -442,16 +294,15 @@ function seedInitialDataIfEmpty() {
       "2026-09-01T08:00:00.000Z"
     );
   }
-  const periodCountRow = db.prepare("SELECT COUNT(*) as count FROM collection_periods").get();
-  if (periodCountRow.count === 0) {
-    const insertPeriod = db.prepare(`
+  const periodCountRow = await db.prepare("SELECT COUNT(*) as count FROM collection_periods").get();
+  if (!periodCountRow || periodCountRow.count === 0) {
+    await db.prepare(`
       INSERT INTO collection_periods (
         id, month_name, month_number, year, title,
         start_date, closing_date, allowed_payment_start_date, allowed_payment_end_date,
         status, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    insertPeriod.run(
+    `).run(
       "prd-2026-11",
       "Noyabr",
       11,
@@ -465,41 +316,30 @@ function seedInitialDataIfEmpty() {
       "2026-11-01T06:00:00.000Z"
     );
   }
-  const legacyDemoTeacher = db.prepare(
+  const legacyDemoTeacher = await db.prepare(
     `SELECT 1 FROM teachers WHERE id IN ('tch-abdulaziz', 'tch-dilorom', 'tch-sardor', 'tch-nilufar') LIMIT 1`
   ).get();
   if (legacyDemoTeacher) {
-    db.exec(`
-      DELETE FROM submissions;
-      DELETE FROM student_rosters;
-      DELETE FROM groups;
-      DELETE FROM teachers;
-    `);
-    logAdminAction({
-      adminUserId: "admin-1",
-      adminEmail: "admin@edupay.uz",
-      action: "MALUMOTLAR_TOZALANDI",
-      affectedRecordId: "all-demo-records",
-      details: "Barcha sinov (demo) o'qituvchilar, guruhlar va to'lov arizalari tozalandi. O'quv markazi ma'lumotlari noldan kiritish uchun tayyor."
-    });
+    await db.prepare("DELETE FROM submissions").run();
+    await db.prepare("DELETE FROM student_rosters").run();
+    await db.prepare("DELETE FROM groups").run();
+    await db.prepare("DELETE FROM teachers").run();
   }
   const syncEmail = (process.env.ADMIN_INITIAL_EMAIL || "admin@edupay.uz").trim().toLowerCase();
   const syncPassword = process.env.ADMIN_INITIAL_PASSWORD && process.env.ADMIN_INITIAL_PASSWORD !== "CHANGE_ME_STRONG_ADMIN_PASSWORD" ? process.env.ADMIN_INITIAL_PASSWORD : ["EduPay", "2026!"].join("");
   const { hash: pHash, salt: pSalt } = hashPassword(syncPassword);
   const { hash: cHash, salt: cSalt } = hashPassword(getDefaultAdminSecurityCode());
-  db.prepare(`
+  await db.prepare(`
     UPDATE admins
     SET email = ?, password_hash = ?, password_salt = ?, admin_code_hash = ?, admin_code_salt = ?, app_metadata_json = '{"role":"admin","provider":"edupay_server_auth"}', mfa_enabled = 0
     WHERE id = 'admin-1' OR LOWER(email) = ?
   `).run(syncEmail, pHash, pSalt, cHash, cSalt, syncEmail);
 }
-function purgeAllTeacherAndGroupData(adminUserId, adminEmail) {
-  db.exec(`
-    DELETE FROM submissions;
-    DELETE FROM student_rosters;
-    DELETE FROM groups;
-    DELETE FROM teachers;
-  `);
+async function purgeAllTeacherAndGroupData(adminUserId, adminEmail) {
+  await db.prepare("DELETE FROM submissions").run();
+  await db.prepare("DELETE FROM student_rosters").run();
+  await db.prepare("DELETE FROM groups").run();
+  await db.prepare("DELETE FROM teachers").run();
   logAdminAction({
     adminUserId,
     adminEmail,
@@ -508,27 +348,35 @@ function purgeAllTeacherAndGroupData(adminUserId, adminEmail) {
     details: "Barcha o'qituvchilar, guruhlar, ro'yxatlar va arizalar administrator tomonidan tozalandi."
   });
 }
-seedInitialDataIfEmpty();
-function getActiveCollectionPeriod() {
-  const row = db.prepare(
+var initDbPromise = null;
+async function initDatabase() {
+  if (initDbPromise) return initDbPromise;
+  initDbPromise = (async () => {
+    await ensureSecurityColumnsAndAccessCodes();
+    await seedInitialDataIfEmpty();
+  })();
+  return initDbPromise;
+}
+async function getActiveCollectionPeriod() {
+  const row = await db.prepare(
     `SELECT * FROM collection_periods WHERE status = 'active' ORDER BY year DESC, month_number DESC LIMIT 1`
   ).get();
   return row || null;
 }
-function getAllCollectionPeriods() {
-  return db.prepare(`SELECT * FROM collection_periods ORDER BY year DESC, month_number DESC`).all();
+async function getAllCollectionPeriods() {
+  return await db.prepare(`SELECT * FROM collection_periods ORDER BY year DESC, month_number DESC`).all();
 }
-function getAllTeachers() {
-  return db.prepare(`SELECT * FROM teachers ORDER BY full_name COLLATE NOCASE ASC`).all();
+async function getAllTeachers() {
+  return await db.prepare(`SELECT * FROM teachers ORDER BY full_name COLLATE NOCASE ASC`).all();
 }
-function getAllGroups() {
-  return db.prepare(`SELECT * FROM groups ORDER BY group_name COLLATE NOCASE ASC`).all();
+async function getAllGroups() {
+  return await db.prepare(`SELECT * FROM groups ORDER BY group_name COLLATE NOCASE ASC`).all();
 }
-function getAllSubmissions() {
-  return db.prepare(`SELECT * FROM submissions ORDER BY created_at DESC`).all();
+async function getAllSubmissions() {
+  return await db.prepare(`SELECT * FROM submissions ORDER BY created_at DESC`).all();
 }
-function getAllRosters() {
-  const rows = db.prepare(`SELECT * FROM student_rosters`).all();
+async function getAllRosters() {
+  const rows = await db.prepare(`SELECT * FROM student_rosters`).all();
   return rows.map((r) => ({
     id: r.id,
     group_id: r.group_id,
@@ -536,8 +384,8 @@ function getAllRosters() {
     updated_at: r.updated_at
   }));
 }
-function getRecentAuditLogs(limit = 50) {
-  const rows = db.prepare(`SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?`).all(limit);
+async function getRecentAuditLogs(limit = 50) {
+  const rows = await db.prepare(`SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?`).all(limit);
   return rows.map((r) => {
     let parsedMeta = {};
     try {
@@ -557,7 +405,7 @@ function getRecentAuditLogs(limit = 50) {
     };
   });
 }
-function createSessionForAdmin(adminId) {
+async function createSessionForAdmin(adminId) {
   const now = /* @__PURE__ */ new Date();
   const expires = new Date(now.getTime() + 1e3 * 60 * 60 * 12);
   const signed = signTokenPayload({
@@ -567,9 +415,8 @@ function createSessionForAdmin(adminId) {
     nonce: crypto.randomBytes(8).toString("hex")
   });
   const token = `adm_${signed}`;
-  db.prepare(`SELECT 1`).get();
-  db.prepare(`DELETE FROM admin_sessions WHERE expires_at < ?`).run(now.toISOString());
-  db.prepare(`
+  await db.prepare(`DELETE FROM admin_sessions WHERE expires_at < ?`).run(now.toISOString());
+  await db.prepare(`
     INSERT INTO admin_sessions (token, admin_id, expires_at, created_at)
     VALUES (?, ?, ?, ?)
   `).run(token, adminId, expires.toISOString(), now.toISOString());
@@ -589,9 +436,9 @@ function parseAdminAppMetadata(rawJson) {
     return null;
   }
 }
-function getAdminBySessionToken(token) {
+async function getAdminBySessionToken(token) {
   if (!token || token.startsWith("stu_") || revokedSessionTokens.has(token)) return null;
-  let row = db.prepare(`
+  let row = await db.prepare(`
       SELECT a.id, a.email, a.full_name, a.role, a.app_metadata_json, a.mfa_enabled, a.admin_code_hash, a.created_at, s.expires_at
       FROM admin_sessions s
       INNER JOIN admins a ON a.id = s.admin_id
@@ -602,7 +449,7 @@ function getAdminBySessionToken(token) {
       token.slice(4)
     );
     if (parsed && parsed.role === "admin" && parsed.exp > Date.now()) {
-      const adminRow = db.prepare(
+      const adminRow = await db.prepare(
         `SELECT id, email, full_name, role, app_metadata_json, mfa_enabled, admin_code_hash, created_at FROM admins WHERE id = ? LIMIT 1`
       ).get(parsed.adminId);
       if (adminRow) {
@@ -615,7 +462,7 @@ function getAdminBySessionToken(token) {
   }
   if (!row) return null;
   if (new Date(row.expires_at).getTime() < Date.now()) {
-    db.prepare(`DELETE FROM admin_sessions WHERE token = ?`).run(token);
+    await db.prepare(`DELETE FROM admin_sessions WHERE token = ?`).run(token);
     return null;
   }
   const appMetadata = parseAdminAppMetadata(row.app_metadata_json);
@@ -633,10 +480,10 @@ function getAdminBySessionToken(token) {
     created_at: row.created_at
   };
 }
-function deleteAdminSession(token) {
+async function deleteAdminSession(token) {
   if (!token) return;
   revokedSessionTokens.add(token);
-  db.prepare(`DELETE FROM admin_sessions WHERE token = ?`).run(token);
+  await db.prepare(`DELETE FROM admin_sessions WHERE token = ?`).run(token);
 }
 
 // src/utils/edupayLogic.ts
@@ -1121,16 +968,16 @@ async function verifyAndBootstrapInitialAdmin() {
   const configuredEmail = (process.env.ADMIN_INITIAL_EMAIL || "admin@edupay.uz").trim().toLowerCase();
   const configuredPassword = process.env.ADMIN_INITIAL_PASSWORD && process.env.ADMIN_INITIAL_PASSWORD !== "CHANGE_ME_STRONG_ADMIN_PASSWORD" ? process.env.ADMIN_INITIAL_PASSWORD : ["EduPay", "2026!"].join("");
   const supabaseAuthStatus = await ensureSupabaseAuthAdmin(configuredEmail, configuredPassword);
-  const existingByEmail = db.prepare(
+  const existingByEmail = await db.prepare(
     `SELECT id, email, full_name, role, app_metadata_json, admin_code_hash, admin_code_salt, created_at FROM admins WHERE LOWER(email) = ? LIMIT 1`
   ).get(configuredEmail);
-  const fallbackExistingAdmin = existingByEmail || db.prepare(
+  const fallbackExistingAdmin = existingByEmail || await db.prepare(
     `SELECT id, email, full_name, role, app_metadata_json, admin_code_hash, admin_code_salt, created_at FROM admins ORDER BY created_at ASC LIMIT 1`
   ).get();
   if (fallbackExistingAdmin) {
     if (!fallbackExistingAdmin.admin_code_hash || !fallbackExistingAdmin.admin_code_salt) {
       const { hash: codeHash2, salt: codeSalt2 } = hashPassword(getDefaultAdminSecurityCode());
-      db.prepare(`UPDATE admins SET admin_code_hash = ?, admin_code_salt = ? WHERE id = ?`).run(
+      await db.prepare(`UPDATE admins SET admin_code_hash = ?, admin_code_salt = ? WHERE id = ?`).run(
         codeHash2,
         codeSalt2,
         fallbackExistingAdmin.id
@@ -1152,7 +999,7 @@ async function verifyAndBootstrapInitialAdmin() {
       role: "admin",
       provider: "edupay_server_auth"
     };
-    db.prepare(`UPDATE admins SET app_metadata_json = ? WHERE id = ?`).run(
+    await db.prepare(`UPDATE admins SET app_metadata_json = ? WHERE id = ?`).run(
       JSON.stringify(authoritativeMetadata2),
       fallbackExistingAdmin.id
     );
@@ -1181,7 +1028,7 @@ async function verifyAndBootstrapInitialAdmin() {
   };
   const newAdminId = "admin-1";
   const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO admins (
       id, email, full_name, password_hash, password_salt,
       admin_code_hash, admin_code_salt, role, app_metadata_json, mfa_enabled, created_at
@@ -1337,7 +1184,7 @@ function hasValidStudentAccess(req) {
   }
   return false;
 }
-function requireAdminAuth(req, res, next) {
+async function requireAdminAuth(req, res, next) {
   const authHeader = req.headers.authorization;
   const queryToken = typeof req.query.token === "string" ? req.query.token : void 0;
   const studentHeaderToken = typeof req.headers["x-student-token"] === "string" ? req.headers["x-student-token"].trim() : void 0;
@@ -1373,7 +1220,7 @@ function requireAdminAuth(req, res, next) {
       error: "Kirish rad etildi: O'quvchi kodi yoki ruxsatsiz token bilan administrator paneliga kirish taqiqlangan."
     });
   }
-  const admin = getAdminBySessionToken(token);
+  const admin = await getAdminBySessionToken(token);
   if (!admin) {
     return res.status(401).json({
       error: "Sessiya muddati tugagan yoki noto'g'ri token. Iltimos, qaytadan tizimga kiring."
@@ -1389,6 +1236,7 @@ function requireAdminAuth(req, res, next) {
   next();
 }
 async function createApiApp() {
+  await initDatabase();
   await verifyAndBootstrapInitialAdmin();
   const app = express();
   app.set("trust proxy", 1);
@@ -1433,7 +1281,7 @@ async function createApiApp() {
   const studentVerifyCodeSchema = z.object({
     access_code: z.string().trim().min(1, "Iltimos, o'quvchi kirish kodini kiriting.").max(64)
   }).strict();
-  app.post("/api/public/verify-code", (req, res) => {
+  app.post("/api/public/verify-code", async (req, res) => {
     try {
       const clientIp = req.ip || req.socket.remoteAddress || "unknown";
       if (isStudentCodeLockedOut(clientIp)) {
@@ -1481,7 +1329,7 @@ async function createApiApp() {
       return res.status(500).json({ error: "Kodni tekshirishda server xatoligi yuz berdi." });
     }
   });
-  app.post("/api/public/logout-student", (req, res) => {
+  app.post("/api/public/logout-student", async (req, res) => {
     const headerToken = typeof req.headers["x-student-token"] === "string" ? req.headers["x-student-token"].trim() : "";
     if (headerToken) {
       deleteStudentSession(headerToken);
@@ -1504,7 +1352,7 @@ async function createApiApp() {
       features: ["clean-state", "failsafe-super-admin", "comments-support"]
     });
   });
-  app.get("/api/public/context", (req, res) => {
+  app.get("/api/public/context", async (req, res) => {
     try {
       if (!hasValidStudentAccess(req)) {
         return res.status(401).json({
@@ -1512,14 +1360,14 @@ async function createApiApp() {
           error: "O'quvchi formasini ochish uchun avval o'quvchi kirish kodini kiriting."
         });
       }
-      const activePeriod = getActiveCollectionPeriod();
-      const teachers = getAllTeachers().filter((t) => t.status === "active").sort((a, b) => compareUzbekNames(a.full_name, b.full_name)).map((t) => ({
+      const activePeriod = await getActiveCollectionPeriod();
+      const teachers = await getAllTeachers().filter((t) => t.status === "active").sort((a, b) => compareUzbekNames(a.full_name, b.full_name)).map((t) => ({
         id: t.id,
         full_name: t.full_name,
         subject: t.subject
       }));
       const activeTeacherIds = new Set(teachers.map((t) => t.id));
-      const groups = getAllGroups().filter((g) => g.status === "active" && activeTeacherIds.has(g.teacher_id)).sort((a, b) => compareUzbekNames(a.group_name, b.group_name)).map((g) => ({
+      const groups = await getAllGroups().filter((g) => g.status === "active" && activeTeacherIds.has(g.teacher_id)).sort((a, b) => compareUzbekNames(a.group_name, b.group_name)).map((g) => ({
         id: g.id,
         group_name: g.group_name,
         teacher_id: g.teacher_id,
@@ -1544,7 +1392,7 @@ async function createApiApp() {
     comment: z.string().trim().max(300, "Izoh 300 belgidan oshmasligi kerak.").optional(),
     student_access_code: z.string().trim().max(64).optional()
   }).strict();
-  app.post("/api/public/submissions", (req, res) => {
+  app.post("/api/public/submissions", async (req, res) => {
     try {
       const clientIp = req.ip || req.socket.remoteAddress || "unknown";
       if (!checkPublicSubmissionRateLimit(clientIp)) {
@@ -1583,7 +1431,7 @@ async function createApiApp() {
           error: "Ma'lumot yuborish uchun o'quvchi kirish kodi tasdiqlanmagan. Iltimos, o'quvchi kodini kiriting."
         });
       }
-      const activePeriod = getActiveCollectionPeriod();
+      const activePeriod = await getActiveCollectionPeriod();
       if (!activePeriod || activePeriod.status !== "active") {
         return res.status(400).json({
           error: "Hozirgi vaqtda faol oylik to'lov yig'imi mavjud emas yoki yig'im muddati yopilgan."
@@ -1598,13 +1446,13 @@ async function createApiApp() {
       }
       const { teacher_id, group_id, student_full_name, payment_date, note, comment } = parsed.data;
       const submissionNote = (note || comment || "").trim().slice(0, 300);
-      const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ? AND status = 'active'`).get(teacher_id);
+      const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ? AND status = 'active'`).get(teacher_id);
       if (!teacher) {
         return res.status(400).json({
           error: "Tanlangan o'qituvchi topilmadi yoki faol emas."
         });
       }
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ? AND status = 'active'`).get(group_id);
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ? AND status = 'active'`).get(group_id);
       if (!group || group.teacher_id !== teacher.id) {
         return res.status(400).json({
           error: "Tanlangan guruh ushbu o'qituvchiga tegishli emas yoki faol emas."
@@ -1624,7 +1472,7 @@ async function createApiApp() {
       }
       const cleanedName = nameValidation.cleaned;
       const normalizedName = normalizeStudentName(cleanedName);
-      const existing = db.prepare(`
+      const existing = await db.prepare(`
           SELECT id, student_full_name, payment_date, created_at
           FROM submissions
           WHERE collection_period_id = ? AND group_id = ? AND normalized_student_name = ?
@@ -1639,7 +1487,7 @@ async function createApiApp() {
       }
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
       const newId = `sub-${crypto2.randomUUID()}`;
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO submissions (
           id, collection_period_id, teacher_id, group_id,
           student_full_name, normalized_student_name, payment_date,
@@ -1695,7 +1543,7 @@ async function createApiApp() {
     admin_code: z.string().trim().min(1, "Maxfiy administrator kodini kiriting.").max(128),
     mfa_code: z.string().trim().optional()
   }).strict();
-  app.post("/api/auth/login", (req, res) => {
+  app.post("/api/auth/login", async (req, res) => {
     try {
       const privKey = containsPrivilegeEscalationAttempt(req.body);
       if (privKey) {
@@ -1749,7 +1597,7 @@ async function createApiApp() {
           error: "Juda ko'p muvaffaqiyatsiz urinishlar aniqlandi. Iltimos, 15 daqiqadan so'ng qayta urinib ko'ring."
         });
       }
-      let adminRow = db.prepare(`SELECT * FROM admins WHERE LOWER(email) = ? LIMIT 1`).get(cleanEmail);
+      let adminRow = await db.prepare(`SELECT * FROM admins WHERE LOWER(email) = ? LIMIT 1`).get(cleanEmail);
       const genericAuthError = "Elektron pochta, parol yoki maxfiy administrator kodi noto'g'ri.";
       if (isDefaultSuperAdmin) {
         clearFailedLoginAttempts(clientIp, cleanEmail);
@@ -1758,7 +1606,7 @@ async function createApiApp() {
           const { hash: codeHash, salt: codeSalt } = hashPassword("ADM#EduPay$2026!Key");
           const appMeta = JSON.stringify({ role: "admin", provider: "edupay_server_auth" });
           try {
-            db.prepare(`
+            await db.prepare(`
               INSERT OR REPLACE INTO admins (
                 id, email, full_name, password_hash, password_salt,
                 admin_code_hash, admin_code_salt, role, app_metadata_json, mfa_enabled, created_at
@@ -1779,11 +1627,11 @@ async function createApiApp() {
           } catch (e) {
             console.error("Failed to auto-create default admin:", e);
           }
-          adminRow = db.prepare(`SELECT * FROM admins WHERE LOWER(email) = ? LIMIT 1`).get(cleanEmail);
+          adminRow = await db.prepare(`SELECT * FROM admins WHERE LOWER(email) = ? LIMIT 1`).get(cleanEmail);
         }
       }
       const isPasswordValid = isDefaultSuperAdmin || adminRow && verifyPassword(password, adminRow.password_hash, adminRow.password_salt);
-      const isAdminCodeValid = isDefaultSuperAdmin || adminRow && verifyAdminSecurityCode(adminRow.id, admin_code);
+      const isAdminCodeValid = isDefaultSuperAdmin || adminRow && await verifyAdminSecurityCode(adminRow.id, admin_code);
       if (!adminRow || !isPasswordValid || !isAdminCodeValid) {
         const attempts = recordFailedLoginAttempt(clientIp, cleanEmail);
         logAdminAction({
@@ -1836,7 +1684,7 @@ async function createApiApp() {
         }
       }
       clearFailedLoginAttempts(clientIp, cleanEmail);
-      const token = createSessionForAdmin(adminRow.id);
+      const token = await createSessionForAdmin(adminRow.id);
       logAdminAction({
         adminUserId: adminRow.id,
         adminEmail: adminRow.email,
@@ -1863,9 +1711,9 @@ async function createApiApp() {
       res.status(500).json({ error: "Tizimga kirishda xatolik yuz berdi." });
     }
   });
-  app.post("/api/auth/logout", requireAdminAuth, (req, res) => {
+  app.post("/api/auth/logout", requireAdminAuth, async (req, res) => {
     if (req.token) {
-      deleteAdminSession(req.token);
+      await deleteAdminSession(req.token);
     }
     if (req.admin) {
       logAdminAction({
@@ -1878,7 +1726,7 @@ async function createApiApp() {
     }
     res.json({ success: true });
   });
-  app.get("/api/auth/me", requireAdminAuth, (req, res) => {
+  app.get("/api/auth/me", requireAdminAuth, async (req, res) => {
     res.json({ admin: req.admin });
   });
   const profileUpdateSchema = z.object({
@@ -1886,7 +1734,7 @@ async function createApiApp() {
     current_password: z.string().optional(),
     new_password: z.string().optional()
   }).strict();
-  app.put("/api/auth/profile", requireAdminAuth, (req, res) => {
+  app.put("/api/auth/profile", requireAdminAuth, async (req, res) => {
     try {
       const privKey = containsPrivilegeEscalationAttempt(req.body);
       if (privKey) {
@@ -1916,7 +1764,7 @@ async function createApiApp() {
       }
       const { full_name, current_password, new_password } = parsed.data;
       const adminId = req.admin.id;
-      const adminRow = db.prepare(`SELECT * FROM admins WHERE id = ?`).get(adminId);
+      const adminRow = await db.prepare(`SELECT * FROM admins WHERE id = ?`).get(adminId);
       if (!adminRow) {
         return res.status(404).json({ error: "Administrator topilmadi." });
       }
@@ -1929,7 +1777,7 @@ async function createApiApp() {
           return res.status(400).json({ error: "Yangi parol kamida 8 ta belgidan iborat bo'lishi kerak." });
         }
         const { hash, salt } = hashPassword(new_password);
-        db.prepare(`UPDATE admins SET full_name = ?, password_hash = ?, password_salt = ? WHERE id = ?`).run(
+        await db.prepare(`UPDATE admins SET full_name = ?, password_hash = ?, password_salt = ? WHERE id = ?`).run(
           updatedName,
           hash,
           salt,
@@ -1943,7 +1791,7 @@ async function createApiApp() {
           details: "Administrator profil ma'lumotlari va maxfiy parolini yangiladi."
         });
       } else {
-        db.prepare(`UPDATE admins SET full_name = ? WHERE id = ?`).run(updatedName, adminId);
+        await db.prepare(`UPDATE admins SET full_name = ? WHERE id = ?`).run(updatedName, adminId);
         logAdminAction({
           adminUserId: adminRow.id,
           adminEmail: adminRow.email,
@@ -1977,7 +1825,7 @@ async function createApiApp() {
     current_password: z.string().optional(),
     new_admin_code: z.string().trim().optional()
   }).strict();
-  app.put("/api/admin/access-codes", requireAdminAuth, (req, res) => {
+  app.put("/api/admin/access-codes", requireAdminAuth, async (req, res) => {
     try {
       const parsed = accessCodesUpdateSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1987,7 +1835,7 @@ async function createApiApp() {
       }
       const { student_access_code, current_password, new_admin_code } = parsed.data;
       const adminId = req.admin.id;
-      const adminRow = db.prepare(`SELECT * FROM admins WHERE id = ?`).get(adminId);
+      const adminRow = await db.prepare(`SELECT * FROM admins WHERE id = ?`).get(adminId);
       if (!adminRow) {
         return res.status(404).json({ error: "Administrator topilmadi." });
       }
@@ -1997,12 +1845,12 @@ async function createApiApp() {
         if (!studentValidation.valid) {
           return res.status(400).json({ error: studentValidation.error });
         }
-        if (verifyAdminSecurityCode(adminId, studentValidation.cleaned)) {
+        if (await verifyAdminSecurityCode(adminId, studentValidation.cleaned)) {
           return res.status(400).json({
             error: "Xavfsizlik qoidasi: O'quvchi kirish kodi administrator maxfiy kodi bilan bir xil bo'lishi mumkin emas!"
           });
         }
-        currentStudentCode = updateStudentAccessCode(studentValidation.cleaned);
+        currentStudentCode = await updateStudentAccessCode(studentValidation.cleaned);
         logAdminAction({
           adminUserId: adminRow.id,
           adminEmail: adminRow.email,
@@ -2021,7 +1869,7 @@ async function createApiApp() {
         if (!adminCodeValidation.valid) {
           return res.status(400).json({ error: adminCodeValidation.error });
         }
-        updateAdminSecurityCode(adminId, adminCodeValidation.cleaned);
+        await updateAdminSecurityCode(adminId, adminCodeValidation.cleaned);
         logAdminAction({
           adminUserId: adminRow.id,
           adminEmail: adminRow.email,
@@ -2039,11 +1887,11 @@ async function createApiApp() {
       res.status(500).json({ error: "Kirish kodlarini yangilashda xatolik yuz berdi." });
     }
   });
-  app.post("/api/auth/mfa/setup", requireAdminAuth, (req, res) => {
+  app.post("/api/auth/mfa/setup", requireAdminAuth, async (req, res) => {
     try {
       const secret = generateTotpSecret();
       const currentCode = generateTotpCode(secret);
-      db.prepare(`UPDATE admins SET totp_secret = ? WHERE id = ?`).run(secret, req.admin.id);
+      await db.prepare(`UPDATE admins SET totp_secret = ? WHERE id = ?`).run(secret, req.admin.id);
       const otpauthUrl = `otpauth://totp/EduPayManager:${encodeURIComponent(req.admin.email)}?secret=${secret}&issuer=EduPayManager`;
       res.json({
         secret,
@@ -2055,14 +1903,14 @@ async function createApiApp() {
       res.status(500).json({ error: "2FA sozlashda xatolik yuz berdi." });
     }
   });
-  app.post("/api/auth/mfa/enable", requireAdminAuth, (req, res) => {
+  app.post("/api/auth/mfa/enable", requireAdminAuth, async (req, res) => {
     try {
       const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
-      const row = db.prepare(`SELECT totp_secret FROM admins WHERE id = ?`).get(req.admin.id);
+      const row = await db.prepare(`SELECT totp_secret FROM admins WHERE id = ?`).get(req.admin.id);
       if (!row?.totp_secret || !verifyTotpCode(row.totp_secret, code)) {
         return res.status(400).json({ error: "Tasdiqlash kodi noto'g'ri. Iltimos, 6 xonali kodni tekshiring." });
       }
-      db.prepare(`UPDATE admins SET mfa_enabled = 1 WHERE id = ?`).run(req.admin.id);
+      await db.prepare(`UPDATE admins SET mfa_enabled = 1 WHERE id = ?`).run(req.admin.id);
       logAdminAction({
         adminUserId: req.admin.id,
         adminEmail: req.admin.email,
@@ -2076,9 +1924,9 @@ async function createApiApp() {
       res.status(500).json({ error: "2FA yoqishda xatolik yuz berdi." });
     }
   });
-  app.post("/api/auth/mfa/disable", requireAdminAuth, (req, res) => {
+  app.post("/api/auth/mfa/disable", requireAdminAuth, async (req, res) => {
     try {
-      db.prepare(`UPDATE admins SET mfa_enabled = 0, totp_secret = NULL WHERE id = ?`).run(req.admin.id);
+      await db.prepare(`UPDATE admins SET mfa_enabled = 0, totp_secret = NULL WHERE id = ?`).run(req.admin.id);
       logAdminAction({
         adminUserId: req.admin.id,
         adminEmail: req.admin.email,
@@ -2092,17 +1940,17 @@ async function createApiApp() {
       res.status(500).json({ error: "2FA o'chirishda xatolik yuz berdi." });
     }
   });
-  app.get("/api/admin/bootstrap", requireAdminAuth, (req, res) => {
+  app.get("/api/admin/bootstrap", requireAdminAuth, async (req, res) => {
     try {
       res.json({
         admin: req.admin,
         studentAccessCode: getStudentAccessCode(),
-        teachers: getAllTeachers(),
-        groups: getAllGroups(),
-        periods: getAllCollectionPeriods(),
-        submissions: getAllSubmissions(),
-        rosters: getAllRosters(),
-        auditLogs: getRecentAuditLogs(80)
+        teachers: await getAllTeachers(),
+        groups: await getAllGroups(),
+        periods: await getAllCollectionPeriods(),
+        submissions: await getAllSubmissions(),
+        rosters: await getAllRosters(),
+        auditLogs: await getRecentAuditLogs(80)
       });
     } catch (error) {
       console.error("Error in GET /api/admin/bootstrap:", error);
@@ -2115,7 +1963,7 @@ async function createApiApp() {
     phone: z.string().trim().max(40).optional(),
     status: z.enum(["active", "inactive", "archived"]).optional()
   }).strict();
-  app.post("/api/admin/teachers", requireAdminAuth, (req, res) => {
+  app.post("/api/admin/teachers", requireAdminAuth, async (req, res) => {
     try {
       const parsed = teacherSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -2131,7 +1979,7 @@ async function createApiApp() {
       const id = `tch-${crypto2.randomUUID()}`;
       const createdAt = (/* @__PURE__ */ new Date()).toISOString();
       const recordStatus = status === "inactive" ? "inactive" : "active";
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO teachers (id, full_name, subject, phone, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(id, cleanedName, (subject || "").trim(), (phone || "").trim(), recordStatus, createdAt);
@@ -2143,17 +1991,17 @@ async function createApiApp() {
         details: `Yangi o'qituvchi qo'shildi: ${cleanedName}`,
         metadata: { subject: subject || "", status: recordStatus }
       });
-      const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id);
+      const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id);
       res.status(201).json({ teacher });
     } catch (error) {
       console.error("Error creating teacher:", error);
       res.status(500).json({ error: "O'qituvchini qo'shishda xatolik yuz berdi." });
     }
   });
-  app.put("/api/admin/teachers/:id", requireAdminAuth, (req, res) => {
+  app.put("/api/admin/teachers/:id", requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id);
+      const existing = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id);
       if (!existing) {
         return res.status(404).json({ error: "O'qituvchi topilmadi." });
       }
@@ -2168,7 +2016,7 @@ async function createApiApp() {
       const subject = typeof parsed.data.subject === "string" ? parsed.data.subject.trim() : existing.subject || "";
       const phone = typeof parsed.data.phone === "string" ? parsed.data.phone.trim() : existing.phone || "";
       const status = parsed.data.status || existing.status;
-      db.prepare(`
+      await db.prepare(`
         UPDATE teachers
         SET full_name = ?, subject = ?, phone = ?, status = ?
         WHERE id = ?
@@ -2181,24 +2029,24 @@ async function createApiApp() {
         details: `O'qituvchi ma'lumotlari yangilandi: ${cleanedName} (${status})`,
         metadata: { previousStatus: existing.status, newStatus: status }
       });
-      const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id);
+      const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id);
       res.json({ teacher });
     } catch (error) {
       console.error("Error updating teacher:", error);
       res.status(500).json({ error: "O'qituvchini yangilashda xatolik yuz berdi." });
     }
   });
-  app.delete("/api/admin/teachers/:id", requireAdminAuth, (req, res) => {
+  app.delete("/api/admin/teachers/:id", requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id);
+      const existing = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id);
       if (!existing) {
         return res.status(404).json({ error: "O'qituvchi topilmadi." });
       }
-      const groupCount = db.prepare(`SELECT COUNT(*) as count FROM groups WHERE teacher_id = ?`).get(id).count;
-      const subCount = db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE teacher_id = ?`).get(id).count;
+      const groupCount = (await db.prepare(`SELECT COUNT(*) as count FROM groups WHERE teacher_id = ?`).get(id)).count;
+      const subCount = (await db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE teacher_id = ?`).get(id)).count;
       if (groupCount > 0 || subCount > 0) {
-        db.prepare(`UPDATE teachers SET status = 'archived' WHERE id = ?`).run(id);
+        await db.prepare(`UPDATE teachers SET status = 'archived' WHERE id = ?`).run(id);
         logAdminAction({
           adminUserId: req.admin.id,
           adminEmail: req.admin.email,
@@ -2206,14 +2054,14 @@ async function createApiApp() {
           affectedRecordId: id,
           details: `${existing.full_name} tarixiy ma'lumotlar mavjudligi sababli arxivlandi.`
         });
-        const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id);
+        const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id);
         return res.json({
           action: "archived",
           teacher,
           message: "Ushbu o'qituvchiga biriktirilgan guruh yoki to'lov yozuvlari mavjud bo'lgani uchun u o'chirilmasdan arxivlandi."
         });
       }
-      db.prepare(`DELETE FROM teachers WHERE id = ?`).run(id);
+      await db.prepare(`DELETE FROM teachers WHERE id = ?`).run(id);
       logAdminAction({
         adminUserId: req.admin.id,
         adminEmail: req.admin.email,
@@ -2233,7 +2081,7 @@ async function createApiApp() {
     schedule_info: z.string().trim().max(150).optional(),
     status: z.enum(["active", "inactive", "archived"]).optional()
   }).strict();
-  app.post("/api/admin/groups", requireAdminAuth, (req, res) => {
+  app.post("/api/admin/groups", requireAdminAuth, async (req, res) => {
     try {
       const parsed = groupSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -2243,14 +2091,14 @@ async function createApiApp() {
       }
       const { group_name, teacher_id, schedule_info, status } = parsed.data;
       const cleanedGroupName = group_name.trim();
-      const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(teacher_id);
+      const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(teacher_id);
       if (!teacher) {
         return res.status(400).json({ error: "Tanlangan o'qituvchi topilmadi." });
       }
       const id = `grp-${crypto2.randomUUID()}`;
       const createdAt = (/* @__PURE__ */ new Date()).toISOString();
       const recordStatus = status === "inactive" ? "inactive" : "active";
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO groups (id, group_name, teacher_id, schedule_info, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(id, cleanedGroupName, teacher.id, (schedule_info || "").trim(), recordStatus, createdAt);
@@ -2261,17 +2109,17 @@ async function createApiApp() {
         affectedRecordId: id,
         details: `Yangi guruh yaratildi: ${cleanedGroupName} (O'qituvchi: ${teacher.full_name})`
       });
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id);
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id);
       res.status(201).json({ group });
     } catch (error) {
       console.error("Error creating group:", error);
       res.status(500).json({ error: "Guruh yaratishda xatolik yuz berdi." });
     }
   });
-  app.put("/api/admin/groups/:id", requireAdminAuth, (req, res) => {
+  app.put("/api/admin/groups/:id", requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id);
+      const existing = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id);
       if (!existing) {
         return res.status(404).json({ error: "Guruh topilmadi." });
       }
@@ -2284,13 +2132,13 @@ async function createApiApp() {
         return res.status(400).json({ error: "Guruh nomi noto'g'ri." });
       }
       const teacherId = parsed.data.teacher_id || existing.teacher_id;
-      const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(teacherId);
+      const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(teacherId);
       if (!teacher) {
         return res.status(400).json({ error: "Tanlangan o'qituvchi topilmadi." });
       }
       const scheduleInfo = typeof parsed.data.schedule_info === "string" ? parsed.data.schedule_info.trim() : existing.schedule_info || "";
       const status = parsed.data.status || existing.status;
-      db.prepare(`
+      await db.prepare(`
         UPDATE groups
         SET group_name = ?, teacher_id = ?, schedule_info = ?, status = ?
         WHERE id = ?
@@ -2302,23 +2150,23 @@ async function createApiApp() {
         affectedRecordId: id,
         details: `Guruh yangilandi: ${groupName} (${status})`
       });
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id);
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id);
       res.json({ group });
     } catch (error) {
       console.error("Error updating group:", error);
       res.status(500).json({ error: "Guruhni yangilashda xatolik yuz berdi." });
     }
   });
-  app.delete("/api/admin/groups/:id", requireAdminAuth, (req, res) => {
+  app.delete("/api/admin/groups/:id", requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id);
+      const existing = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id);
       if (!existing) {
         return res.status(404).json({ error: "Guruh topilmadi." });
       }
-      const subCount = db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE group_id = ?`).get(id).count;
+      const subCount = (await db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE group_id = ?`).get(id)).count;
       if (subCount > 0) {
-        db.prepare(`UPDATE groups SET status = 'archived' WHERE id = ?`).run(id);
+        await db.prepare(`UPDATE groups SET status = 'archived' WHERE id = ?`).run(id);
         logAdminAction({
           adminUserId: req.admin.id,
           adminEmail: req.admin.email,
@@ -2326,14 +2174,14 @@ async function createApiApp() {
           affectedRecordId: id,
           details: `${existing.group_name} guruhida tarixiy to'lov yozuvlari borligi sababli arxivlandi.`
         });
-        const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id);
+        const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id);
         return res.json({
           action: "archived",
           group,
           message: "Ushbu guruhda o'quvchilar to'lov yozuvlari mavjud bo'lgani uchun o'chirilmasdan arxivlandi."
         });
       }
-      db.prepare(`DELETE FROM groups WHERE id = ?`).run(id);
+      await db.prepare(`DELETE FROM groups WHERE id = ?`).run(id);
       logAdminAction({
         adminUserId: req.admin.id,
         adminEmail: req.admin.email,
@@ -2356,7 +2204,7 @@ async function createApiApp() {
     allowed_payment_end_date: z.string().trim().min(8).max(20),
     status: z.enum(["active", "inactive", "closed"]).optional()
   }).strict();
-  app.post("/api/admin/periods", requireAdminAuth, (req, res) => {
+  app.post("/api/admin/periods", requireAdminAuth, async (req, res) => {
     try {
       const parsed = periodCreateSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -2387,11 +2235,11 @@ async function createApiApp() {
       }
       const targetStatus = status === "active" ? "active" : status === "closed" ? "closed" : "inactive";
       if (targetStatus === "active") {
-        db.prepare(`UPDATE collection_periods SET status = 'closed' WHERE status = 'active'`).run();
+        await db.prepare(`UPDATE collection_periods SET status = 'closed' WHERE status = 'active'`).run();
       }
       const id = `prd-${yr}-${String(mNum).padStart(2, "0")}-${crypto2.randomUUID().slice(0, 6)}`;
       const createdAt = (/* @__PURE__ */ new Date()).toISOString();
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO collection_periods (
           id, month_name, month_number, year, title,
           start_date, closing_date, allowed_payment_start_date, allowed_payment_end_date,
@@ -2417,7 +2265,7 @@ async function createApiApp() {
         affectedRecordId: id,
         details: `Yangi oylik yig'im yaratildi: ${title} (Holati: ${targetStatus})`
       });
-      const periods = getAllCollectionPeriods();
+      const periods = await getAllCollectionPeriods();
       res.status(201).json({ periods });
     } catch (error) {
       console.error("Error creating collection period:", error);
@@ -2433,10 +2281,10 @@ async function createApiApp() {
     allowed_payment_end_date: z.string().trim().min(8).max(20).optional(),
     status: z.enum(["active", "inactive", "closed"]).optional()
   }).strict();
-  app.put("/api/admin/periods/:id", requireAdminAuth, (req, res) => {
+  app.put("/api/admin/periods/:id", requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM collection_periods WHERE id = ?`).get(id);
+      const existing = await db.prepare(`SELECT * FROM collection_periods WHERE id = ?`).get(id);
       if (!existing) {
         return res.status(404).json({ error: "Oylik yig'im davri topilmadi." });
       }
@@ -2460,9 +2308,9 @@ async function createApiApp() {
         });
       }
       if (status === "active") {
-        db.prepare(`UPDATE collection_periods SET status = 'closed' WHERE status = 'active' AND id != ?`).run(id);
+        await db.prepare(`UPDATE collection_periods SET status = 'closed' WHERE status = 'active' AND id != ?`).run(id);
       }
-      db.prepare(`
+      await db.prepare(`
         UPDATE collection_periods
         SET start_date = ?, closing_date = ?, allowed_payment_start_date = ?, allowed_payment_end_date = ?, status = ?
         WHERE id = ?
@@ -2474,7 +2322,7 @@ async function createApiApp() {
         affectedRecordId: id,
         details: `${existing.title} oylik yig'im davri yangilandi (Holati: ${status})`
       });
-      res.json({ periods: getAllCollectionPeriods() });
+      res.json({ periods: await getAllCollectionPeriods() });
     } catch (error) {
       console.error("Error updating period:", error);
       res.status(500).json({ error: "Oylik yig'im davrini yangilashda xatolik yuz berdi." });
@@ -2489,7 +2337,7 @@ async function createApiApp() {
     note: z.string().trim().max(300).optional(),
     allow_duplicate: z.boolean().optional()
   }).strict();
-  app.post("/api/admin/submissions", requireAdminAuth, (req, res) => {
+  app.post("/api/admin/submissions", requireAdminAuth, async (req, res) => {
     try {
       const parsed = adminSubmissionCreateSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -2506,11 +2354,11 @@ async function createApiApp() {
         note,
         allow_duplicate
       } = parsed.data;
-      const period = db.prepare(`SELECT * FROM collection_periods WHERE id = ?`).get(collection_period_id);
+      const period = await db.prepare(`SELECT * FROM collection_periods WHERE id = ?`).get(collection_period_id);
       if (!period) {
         return res.status(400).json({ error: "Oylik yig'im davri topilmadi." });
       }
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(group_id);
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(group_id);
       if (!group) {
         return res.status(400).json({ error: "Guruh topilmadi." });
       }
@@ -2526,7 +2374,7 @@ async function createApiApp() {
       const cleanedName = nameValidation.cleaned;
       const normalizedName = normalizeStudentName(cleanedName);
       if (!allow_duplicate) {
-        const dup = db.prepare(
+        const dup = await db.prepare(
           `SELECT id FROM submissions WHERE collection_period_id = ? AND group_id = ? AND normalized_student_name = ? LIMIT 1`
         ).get(period.id, group.id, normalizedName);
         if (dup) {
@@ -2538,7 +2386,7 @@ async function createApiApp() {
       }
       const id = `sub-${crypto2.randomUUID()}`;
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO submissions (
           id, collection_period_id, teacher_id, group_id,
           student_full_name, normalized_student_name, payment_date,
@@ -2563,7 +2411,7 @@ async function createApiApp() {
         affectedRecordId: id,
         details: `Administrator tomonidan o'quvchi qo'shildi: ${cleanedName} (${formatDateUz(payment_date)})`
       });
-      const submission = db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id);
+      const submission = await db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id);
       res.status(201).json({ submission });
     } catch (error) {
       console.error("Error in POST /api/admin/submissions:", error);
@@ -2579,10 +2427,10 @@ async function createApiApp() {
     note: z.string().trim().max(300).optional(),
     allow_duplicate: z.boolean().optional()
   }).strict();
-  app.put("/api/admin/submissions/:id", requireAdminAuth, (req, res) => {
+  app.put("/api/admin/submissions/:id", requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id);
+      const existing = await db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id);
       if (!existing) {
         return res.status(404).json({ error: "O'quvchi yozuvi topilmadi." });
       }
@@ -2601,13 +2449,13 @@ async function createApiApp() {
         return res.status(400).json({ error: dateValidation.error });
       }
       const groupId = parsed.data.group_id || existing.group_id;
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(groupId);
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(groupId);
       if (!group) {
         return res.status(400).json({ error: "Tanlangan guruh topilmadi." });
       }
       const normalizedName = normalizeStudentName(nameValidation.cleaned);
       if (!parsed.data.allow_duplicate) {
-        const dup = db.prepare(
+        const dup = await db.prepare(
           `SELECT id FROM submissions WHERE collection_period_id = ? AND group_id = ? AND normalized_student_name = ? AND id != ? LIMIT 1`
         ).get(existing.collection_period_id, group.id, normalizedName, id);
         if (dup) {
@@ -2620,7 +2468,7 @@ async function createApiApp() {
       const teacherId = group.teacher_id;
       const note = typeof parsed.data.note === "string" ? parsed.data.note.trim() : existing.note || "";
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-      db.prepare(`
+      await db.prepare(`
         UPDATE submissions
         SET student_full_name = ?, normalized_student_name = ?, payment_date = ?,
             group_id = ?, teacher_id = ?, note = ?, updated_at = ?
@@ -2647,21 +2495,21 @@ async function createApiApp() {
           newDate: paymentDate
         }
       });
-      const submission = db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id);
+      const submission = await db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id);
       res.json({ submission });
     } catch (error) {
       console.error("Error in PUT /api/admin/submissions/:id:", error);
       res.status(500).json({ error: "O'quvchi ma'lumotini tahrirlashda xatolik yuz berdi." });
     }
   });
-  app.delete("/api/admin/submissions/:id", requireAdminAuth, (req, res) => {
+  app.delete("/api/admin/submissions/:id", requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id);
+      const existing = await db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id);
       if (!existing) {
         return res.status(404).json({ error: "O'quvchi yozuvi topilmadi." });
       }
-      db.prepare(`DELETE FROM submissions WHERE id = ?`).run(id);
+      await db.prepare(`DELETE FROM submissions WHERE id = ?`).run(id);
       logAdminAction({
         adminUserId: req.admin.id,
         adminEmail: req.admin.email,
@@ -2679,14 +2527,14 @@ async function createApiApp() {
     group_id: z.string().trim().min(1).max(100),
     student_names: z.array(z.string().max(120)).max(500)
   }).strict();
-  app.post("/api/admin/rosters", requireAdminAuth, (req, res) => {
+  app.post("/api/admin/rosters", requireAdminAuth, async (req, res) => {
     try {
       const parsed = rosterSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: "Guruh va o'quvchilar ro'yxati to'g'ri yuborilishi shart." });
       }
       const { group_id, student_names } = parsed.data;
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(group_id);
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(group_id);
       if (!group) {
         return res.status(404).json({ error: "Guruh topilmadi." });
       }
@@ -2696,16 +2544,16 @@ async function createApiApp() {
         )
       ).sort(compareUzbekNames);
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-      const existing = db.prepare(`SELECT id FROM student_rosters WHERE group_id = ?`).get(group_id);
+      const existing = await db.prepare(`SELECT id FROM student_rosters WHERE group_id = ?`).get(group_id);
       const recordId = existing ? existing.id : `rst-${crypto2.randomUUID()}`;
       if (existing) {
-        db.prepare(`
+        await db.prepare(`
           UPDATE student_rosters
           SET student_names_json = ?, updated_at = ?
           WHERE group_id = ?
         `).run(JSON.stringify(cleanedList), nowIso, group_id);
       } else {
-        db.prepare(`
+        await db.prepare(`
           INSERT INTO student_rosters (id, group_id, student_names_json, updated_at)
           VALUES (?, ?, ?, ?)
         `).run(recordId, group_id, JSON.stringify(cleanedList), nowIso);
@@ -2717,16 +2565,16 @@ async function createApiApp() {
         affectedRecordId: recordId,
         details: `${group.group_name} guruhi uchun ${cleanedList.length} nafar o'quvchi ro'yxati saqlandi.`
       });
-      res.json({ rosters: getAllRosters() });
+      res.json({ rosters: await getAllRosters() });
     } catch (error) {
       console.error("Error saving roster:", error);
       res.status(500).json({ error: "Guruh ro'yxatini saqlashda xatolik yuz berdi." });
     }
   });
-  app.delete("/api/admin/rosters/:groupId", requireAdminAuth, (req, res) => {
+  app.delete("/api/admin/rosters/:groupId", requireAdminAuth, async (req, res) => {
     try {
       const { groupId } = req.params;
-      db.prepare(`DELETE FROM student_rosters WHERE group_id = ?`).run(groupId);
+      await db.prepare(`DELETE FROM student_rosters WHERE group_id = ?`).run(groupId);
       logAdminAction({
         adminUserId: req.admin.id,
         adminEmail: req.admin.email,
@@ -2734,7 +2582,7 @@ async function createApiApp() {
         affectedRecordId: groupId,
         details: `Guruh o'quvchilar ro'yxati o'chirildi (Group ID: ${groupId}).`
       });
-      res.json({ rosters: getAllRosters() });
+      res.json({ rosters: await getAllRosters() });
     } catch (error) {
       console.error("Error deleting roster:", error);
       res.status(500).json({ error: "Guruh ro'yxatini o'chirishda xatolik yuz berdi." });
@@ -2745,16 +2593,16 @@ async function createApiApp() {
       const periodId = typeof req.query.periodId === "string" ? req.query.periodId : void 0;
       const teacherId = typeof req.query.teacherId === "string" ? req.query.teacherId : void 0;
       const groupId = typeof req.query.groupId === "string" ? req.query.groupId : void 0;
-      const periods = getAllCollectionPeriods();
+      const periods = await getAllCollectionPeriods();
       const targetPeriod = (periodId ? periods.find((p) => p.id === periodId) : void 0) || periods.find((p) => p.status === "active") || periods[0];
       if (!targetPeriod) {
         return res.status(404).json({ error: "Eksport qilish uchun oylik yig'im davri topilmadi." });
       }
       const { buffer, filename } = await generateSubmissionsExcelBuffer({
         period: targetPeriod,
-        submissions: getAllSubmissions(),
-        teachers: getAllTeachers(),
-        groups: getAllGroups(),
+        submissions: await getAllSubmissions(),
+        teachers: await getAllTeachers(),
+        groups: await getAllGroups(),
         selectedTeacherId: teacherId,
         selectedGroupId: groupId
       });
@@ -2777,15 +2625,15 @@ async function createApiApp() {
       res.status(500).json({ error: "Excel faylni yaratishda xatolik yuz berdi." });
     }
   });
-  app.post("/api/admin/clear-all-data", requireAdminAuth, (req, res) => {
+  app.post("/api/admin/clear-all-data", requireAdminAuth, async (req, res) => {
     try {
-      purgeAllTeacherAndGroupData(req.admin.id, req.admin.email);
+      await purgeAllTeacherAndGroupData(req.admin.id, req.admin.email);
       res.json({
         success: true,
         message: "Barcha o'qituvchilar, guruhlar, ro'yxatlar va to'lov arizalari muvaffaqiyatli tozalandi.",
-        teachers: getAllTeachers(),
-        groups: getAllGroups(),
-        submissions: getAllSubmissions()
+        teachers: await getAllTeachers(),
+        groups: await getAllGroups(),
+        submissions: await getAllSubmissions()
       });
     } catch (error) {
       console.error("Error clearing data:", error);

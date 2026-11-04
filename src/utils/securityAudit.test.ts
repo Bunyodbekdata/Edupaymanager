@@ -23,17 +23,17 @@ describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Cont
     process.env.NODE_ENV = 'production'; // Test pure API & static routing without Vite dev middleware overhead
     resetSecurityRateLimits();
     // Ensure active period window covers current date for submission tests
-    db.prepare(
+    await db.prepare(
       `UPDATE collection_periods SET start_date = '2025-01-01', closing_date = '2030-12-31' WHERE id = 'prd-2026-11'`
     ).run();
     // Ensure test fixtures exist for isolated integration tests
-    db.prepare(`
+    await db.prepare(`
       INSERT OR IGNORE INTO teachers (id, full_name, subject, phone, status, created_at)
-      VALUES ('tch-abdulaziz', 'Abdulaziz Karimov', 'IELTS', '+998901234567', 'active', '2026-09-01T00:00:00.000Z')
+      VALUES ('tch-test-audit', 'Abdulaziz Karimov', 'IELTS', '+998901234567', 'active', '2026-09-01T00:00:00.000Z')
     `).run();
-    db.prepare(`
+    await db.prepare(`
       INSERT OR IGNORE INTO groups (id, group_name, teacher_id, schedule_info, status, created_at)
-      VALUES ('grp-ielts-01', 'IELTS-01', 'tch-abdulaziz', 'Dush 14:00', 'active', '2026-09-01T00:00:00.000Z')
+      VALUES ('grp-test-audit', 'IELTS-01', 'tch-test-audit', 'Dush 14:00', 'active', '2026-09-01T00:00:00.000Z')
     `).run();
     const app = await createApp();
     server = http.createServer(app);
@@ -50,12 +50,12 @@ describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Cont
 
   after(async () => {
     if (createdTestSubmissionId) {
-      db.prepare(`DELETE FROM submissions WHERE id = ?`).run(createdTestSubmissionId);
+      await db.prepare(`DELETE FROM submissions WHERE id = ?`).run(createdTestSubmissionId);
     }
-    db.prepare(`DELETE FROM submissions WHERE normalized_student_name = 'xavfsizlik tekshiruv talabasi'`).run();
-    db.prepare(`DELETE FROM groups WHERE id = 'grp-ielts-01'`).run();
-    db.prepare(`DELETE FROM teachers WHERE id = 'tch-abdulaziz'`).run();
-    db.prepare(`DELETE FROM admins WHERE id = 'non-admin-test-user'`).run();
+    await db.prepare(`DELETE FROM submissions WHERE normalized_student_name = 'xavfsizlik tekshiruv talabasi'`).run();
+    await db.prepare(`DELETE FROM groups WHERE id = 'grp-test-audit'`).run();
+    await db.prepare(`DELETE FROM teachers WHERE id = 'tch-test-audit'`).run();
+    await db.prepare(`DELETE FROM admins WHERE id = 'non-admin-test-user'`).run();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
@@ -136,8 +136,8 @@ describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Cont
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        teacher_id: 'tch-abdulaziz',
-        group_id: 'grp-ielts-01',
+        teacher_id: 'tch-test-audit',
+        group_id: 'grp-test-audit',
         student_full_name: 'Talaba Kodсиз',
         payment_date: '2026-11-12',
       }),
@@ -196,7 +196,7 @@ describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Cont
     assert.equal(studentCodeInAdminLoginRes.status, 403);
 
     // 6. Test with a database user whose app_metadata.role is NOT "admin"
-    db.prepare(`
+    await db.prepare(`
       INSERT OR REPLACE INTO admins (
         id, email, full_name, password_hash, password_salt, role, app_metadata_json, mfa_enabled, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
@@ -211,7 +211,7 @@ describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Cont
       new Date().toISOString()
     );
 
-    const nonAdminSessionToken = createSessionForAdmin('non-admin-test-user');
+    const nonAdminSessionToken = await createSessionForAdmin('non-admin-test-user');
     const nonAdminRes = await fetch(`${baseUrl}/api/admin/bootstrap`, {
       headers: { Authorization: `Bearer ${nonAdminSessionToken}` },
     });
@@ -223,7 +223,7 @@ describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Cont
   });
 
   it('Test C — Public Student Submission with valid student token succeeds and returns only confirmation summary', async () => {
-    db.prepare(`DELETE FROM submissions WHERE normalized_student_name = 'xavfsizlik tekshiruv talabasi'`).run();
+    await db.prepare(`DELETE FROM submissions WHERE normalized_student_name = 'xavfsizlik tekshiruv talabasi'`).run();
     const res = await fetch(`${baseUrl}/api/public/submissions`, {
       method: 'POST',
       headers: {
@@ -231,8 +231,8 @@ describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Cont
         'X-Student-Token': validStudentToken,
       },
       body: JSON.stringify({
-        teacher_id: 'tch-abdulaziz',
-        group_id: 'grp-ielts-01',
+        teacher_id: 'tch-test-audit',
+        group_id: 'grp-test-audit',
         student_full_name: 'Xavfsizlik Tekshiruv Talabasi',
         payment_date: '2026-11-12',
       }),
@@ -311,8 +311,8 @@ describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Cont
         'X-Student-Token': validStudentToken,
       },
       body: JSON.stringify({
-        teacher_id: 'tch-abdulaziz',
-        group_id: 'grp-ielts-01',
+        teacher_id: 'tch-test-audit',
+        group_id: 'grp-test-audit',
         student_full_name: 'Escalation Student',
         payment_date: '2026-11-10',
         role: 'admin',
@@ -418,11 +418,11 @@ describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Cont
 
     // 5. Verify duplicate student name check when editing a submission via PUT /api/admin/submissions/:id
     if (createdTestSubmissionId) {
-      db.prepare(`
+      await db.prepare(`
         INSERT OR IGNORE INTO submissions (
           id, collection_period_id, teacher_id, group_id, student_full_name, normalized_student_name, payment_date, note, created_at, updated_at
         ) VALUES (
-          'sub-test-dup', 'prd-2026-11', 'tch-abdulaziz', 'grp-ielts-01', 'Abdullayev Jasurbek', 'abdullayev jasurbek', '2026-11-10', '', '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z'
+          'sub-test-dup', 'prd-2026-11', 'tch-test-audit', 'grp-test-audit', 'Abdullayev Jasurbek', 'abdullayev jasurbek', '2026-11-10', '', '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z'
         )
       `).run();
       const dupEditRes = await fetch(`${baseUrl}/api/admin/submissions/${createdTestSubmissionId}`, {
@@ -432,13 +432,13 @@ describe('EduPay Manager — Comprehensive Security Audit & Two-Tier Access Cont
           Authorization: `Bearer ${validAdminToken}`,
         },
         body: JSON.stringify({
-          student_full_name: 'Abdullayev Jasurbek', // Already exists in grp-ielts-01 for prd-2026-11
-          group_id: 'grp-ielts-01',
+          student_full_name: 'Abdullayev Jasurbek', // Already exists in grp-test-audit for prd-2026-11
+          group_id: 'grp-test-audit',
           payment_date: '2026-11-10',
         }),
       });
       assert.equal(dupEditRes.status, 409);
-      db.prepare(`DELETE FROM submissions WHERE id = 'sub-test-dup'`).run();
+      await db.prepare(`DELETE FROM submissions WHERE id = 'sub-test-dup'`).run();
     }
 
     // 6. Verify Excel Export works for authenticated administrator

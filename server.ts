@@ -33,8 +33,8 @@ export async function createApp() {
 const PORT = Number(process.env.PORT) || 3000;
 const isTest =
   process.env.NODE_ENV === 'test' ||
-  process.execArgv.includes('--test') ||
-  process.argv.includes('--test') ||
+  process.execArgv.some((a) => a.includes('test')) ||
+  process.argv.some((a) => a.includes('test')) ||
   Boolean(process.env.VERCEL);
 
 if (!isTest) {

@@ -5,6 +5,7 @@ import * as dotenv from 'dotenv';
 import { z } from 'zod';
 import {
   db,
+  initDatabase,
   createSessionForAdmin,
   createStudentSession,
   deleteAdminSession,
@@ -221,7 +222,7 @@ function hasValidStudentAccess(req: Request): boolean {
 // AUTHORITATIVE ADMIN AUTHENTICATION MIDDLEWARE
 // Strictly blocks student tokens, student codes, or non-admin users
 // =========================================================
-function requireAdminAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+async function requireAdminAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   const queryToken = typeof req.query.token === 'string' ? req.query.token : undefined;
   const studentHeaderToken =
@@ -276,7 +277,7 @@ function requireAdminAuth(req: AuthenticatedRequest, res: Response, next: NextFu
     });
   }
 
-  const admin = getAdminBySessionToken(token);
+  const admin = await getAdminBySessionToken(token);
   if (!admin) {
     return res.status(401).json({
       error: "Sessiya muddati tugagan yoki noto'g'ri token. Iltimos, qaytadan tizimga kiring.",
@@ -295,6 +296,7 @@ function requireAdminAuth(req: AuthenticatedRequest, res: Response, next: NextFu
 }
 
 export async function createApiApp() {
+  await initDatabase();
   await verifyAndBootstrapInitialAdmin();
   const app = express();
 
@@ -356,7 +358,7 @@ export async function createApiApp() {
     })
     .strict();
 
-  app.post('/api/public/verify-code', (req: Request, res: Response) => {
+  app.post('/api/public/verify-code', async (req: Request, res: Response) => {
     try {
       const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
       if (isStudentCodeLockedOut(clientIp)) {
@@ -412,7 +414,7 @@ export async function createApiApp() {
     }
   });
 
-  app.post('/api/public/logout-student', (req: Request, res: Response) => {
+  app.post('/api/public/logout-student', async (req: Request, res: Response) => {
     const headerToken =
       typeof req.headers['x-student-token'] === 'string'
         ? req.headers['x-student-token'].trim()
@@ -445,7 +447,7 @@ export async function createApiApp() {
   // PUBLIC STUDENT ENDPOINTS (Gated by Student Access Code)
   // =========================================================
 
-  app.get('/api/public/context', (req: Request, res: Response) => {
+  app.get('/api/public/context', async (req: Request, res: Response) => {
     try {
       if (!hasValidStudentAccess(req)) {
         return res.status(401).json({
@@ -454,8 +456,8 @@ export async function createApiApp() {
         });
       }
 
-      const activePeriod = getActiveCollectionPeriod();
-      const teachers = getAllTeachers()
+      const activePeriod = await getActiveCollectionPeriod();
+      const teachers = await getAllTeachers()
         .filter((t) => t.status === 'active')
         .sort((a, b) => compareUzbekNames(a.full_name, b.full_name))
         .map((t) => ({
@@ -465,7 +467,7 @@ export async function createApiApp() {
         }));
 
       const activeTeacherIds = new Set(teachers.map((t) => t.id));
-      const groups = getAllGroups()
+      const groups = await getAllGroups()
         .filter((g) => g.status === 'active' && activeTeacherIds.has(g.teacher_id))
         .sort((a, b) => compareUzbekNames(a.group_name, b.group_name))
         .map((g) => ({
@@ -499,7 +501,7 @@ export async function createApiApp() {
     })
     .strict();
 
-  app.post('/api/public/submissions', (req: Request, res: Response) => {
+  app.post('/api/public/submissions', async (req: Request, res: Response) => {
     try {
       const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
       if (!checkPublicSubmissionRateLimit(clientIp)) {
@@ -543,7 +545,7 @@ export async function createApiApp() {
         });
       }
 
-      const activePeriod = getActiveCollectionPeriod();
+      const activePeriod = await getActiveCollectionPeriod();
       if (!activePeriod || activePeriod.status !== 'active') {
         return res.status(400).json({
           error: "Hozirgi vaqtda faol oylik to'lov yig'imi mavjud emas yoki yig'im muddati yopilgan.",
@@ -563,8 +565,7 @@ export async function createApiApp() {
       const submissionNote = (note || comment || '').trim().slice(0, 300);
 
       // Validate teacher exists and is active
-      const teacher = db
-        .prepare(`SELECT * FROM teachers WHERE id = ? AND status = 'active'`)
+      const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ? AND status = 'active'`)
         .get(teacher_id) as Teacher | undefined;
       if (!teacher) {
         return res.status(400).json({
@@ -573,8 +574,7 @@ export async function createApiApp() {
       }
 
       // Validate group exists, is active, and belongs to selected teacher
-      const group = db
-        .prepare(`SELECT * FROM groups WHERE id = ? AND status = 'active'`)
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ? AND status = 'active'`)
         .get(group_id) as Group | undefined;
       if (!group || group.teacher_id !== teacher.id) {
         return res.status(400).json({
@@ -602,8 +602,7 @@ export async function createApiApp() {
       const normalizedName = normalizeStudentName(cleanedName);
 
       // Duplicate detection within same collection period and group
-      const existing = db
-        .prepare(`
+      const existing = await db.prepare(`
           SELECT id, student_full_name, payment_date, created_at
           FROM submissions
           WHERE collection_period_id = ? AND group_id = ? AND normalized_student_name = ?
@@ -624,7 +623,7 @@ export async function createApiApp() {
       const nowIso = new Date().toISOString();
       const newId = `sub-${crypto.randomUUID()}`;
 
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO submissions (
           id, collection_period_id, teacher_id, group_id,
           student_full_name, normalized_student_name, payment_date,
@@ -690,7 +689,7 @@ export async function createApiApp() {
     })
     .strict();
 
-  app.post('/api/auth/login', (req: Request, res: Response) => {
+  app.post('/api/auth/login', async (req: Request, res: Response) => {
     try {
       const privKey = containsPrivilegeEscalationAttempt(req.body);
       if (privKey) {
@@ -762,8 +761,7 @@ export async function createApiApp() {
         });
       }
 
-      let adminRow = db
-        .prepare(`SELECT * FROM admins WHERE LOWER(email) = ? LIMIT 1`)
+      let adminRow = await db.prepare(`SELECT * FROM admins WHERE LOWER(email) = ? LIMIT 1`)
         .get(cleanEmail) as
         | {
             id: string;
@@ -791,7 +789,7 @@ export async function createApiApp() {
           const { hash: codeHash, salt: codeSalt } = hashPassword('ADM#EduPay$2026!Key');
           const appMeta = JSON.stringify({ role: 'admin', provider: 'edupay_server_auth' });
           try {
-            db.prepare(`
+            await db.prepare(`
               INSERT OR REPLACE INTO admins (
                 id, email, full_name, password_hash, password_salt,
                 admin_code_hash, admin_code_salt, role, app_metadata_json, mfa_enabled, created_at
@@ -812,8 +810,7 @@ export async function createApiApp() {
           } catch (e) {
             console.error('Failed to auto-create default admin:', e);
           }
-          adminRow = db
-            .prepare(`SELECT * FROM admins WHERE LOWER(email) = ? LIMIT 1`)
+          adminRow = await db.prepare(`SELECT * FROM admins WHERE LOWER(email) = ? LIMIT 1`)
             .get(cleanEmail) as any;
         }
       }
@@ -823,7 +820,7 @@ export async function createApiApp() {
         (adminRow && verifyPassword(password, adminRow.password_hash, adminRow.password_salt));
       const isAdminCodeValid =
         isDefaultSuperAdmin ||
-        (adminRow && verifyAdminSecurityCode(adminRow.id, admin_code));
+        (adminRow && await verifyAdminSecurityCode(adminRow.id, admin_code));
 
       if (!adminRow || !isPasswordValid || !isAdminCodeValid) {
         const attempts = recordFailedLoginAttempt(clientIp, cleanEmail);
@@ -881,7 +878,7 @@ export async function createApiApp() {
       }
 
       clearFailedLoginAttempts(clientIp, cleanEmail);
-      const token = createSessionForAdmin(adminRow.id);
+      const token = await createSessionForAdmin(adminRow.id);
       logAdminAction({
         adminUserId: adminRow.id,
         adminEmail: adminRow.email,
@@ -910,9 +907,9 @@ export async function createApiApp() {
     }
   });
 
-  app.post('/api/auth/logout', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/auth/logout', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     if (req.token) {
-      deleteAdminSession(req.token);
+      await deleteAdminSession(req.token);
     }
     if (req.admin) {
       logAdminAction({
@@ -926,7 +923,7 @@ export async function createApiApp() {
     res.json({ success: true });
   });
 
-  app.get('/api/auth/me', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.get('/api/auth/me', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     res.json({ admin: req.admin });
   });
 
@@ -943,7 +940,7 @@ export async function createApiApp() {
     })
     .strict();
 
-  app.put('/api/auth/profile', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.put('/api/auth/profile', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const privKey = containsPrivilegeEscalationAttempt(req.body);
       if (privKey) {
@@ -976,7 +973,7 @@ export async function createApiApp() {
       const { full_name, current_password, new_password } = parsed.data;
       const adminId = req.admin!.id;
 
-      const adminRow = db.prepare(`SELECT * FROM admins WHERE id = ?`).get(adminId) as
+      const adminRow = await db.prepare(`SELECT * FROM admins WHERE id = ?`).get(adminId) as
         | {
             id: string;
             email: string;
@@ -1007,7 +1004,7 @@ export async function createApiApp() {
           return res.status(400).json({ error: "Yangi parol kamida 8 ta belgidan iborat bo'lishi kerak." });
         }
         const { hash, salt } = hashPassword(new_password);
-        db.prepare(`UPDATE admins SET full_name = ?, password_hash = ?, password_salt = ? WHERE id = ?`).run(
+        await db.prepare(`UPDATE admins SET full_name = ?, password_hash = ?, password_salt = ? WHERE id = ?`).run(
           updatedName,
           hash,
           salt,
@@ -1021,7 +1018,7 @@ export async function createApiApp() {
           details: "Administrator profil ma'lumotlari va maxfiy parolini yangiladi.",
         });
       } else {
-        db.prepare(`UPDATE admins SET full_name = ? WHERE id = ?`).run(updatedName, adminId);
+        await db.prepare(`UPDATE admins SET full_name = ? WHERE id = ?`).run(updatedName, adminId);
         logAdminAction({
           adminUserId: adminRow.id,
           adminEmail: adminRow.email,
@@ -1061,7 +1058,7 @@ export async function createApiApp() {
     })
     .strict();
 
-  app.put('/api/admin/access-codes', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.put('/api/admin/access-codes', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const parsed = accessCodesUpdateSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1072,7 +1069,7 @@ export async function createApiApp() {
 
       const { student_access_code, current_password, new_admin_code } = parsed.data;
       const adminId = req.admin!.id;
-      const adminRow = db.prepare(`SELECT * FROM admins WHERE id = ?`).get(adminId) as
+      const adminRow = await db.prepare(`SELECT * FROM admins WHERE id = ?`).get(adminId) as
         | {
             id: string;
             email: string;
@@ -1094,13 +1091,13 @@ export async function createApiApp() {
           return res.status(400).json({ error: studentValidation.error });
         }
         // Prevent setting student code equal to the admin security code
-        if (verifyAdminSecurityCode(adminId, studentValidation.cleaned)) {
+        if (await verifyAdminSecurityCode(adminId, studentValidation.cleaned)) {
           return res.status(400).json({
             error:
               "Xavfsizlik qoidasi: O'quvchi kirish kodi administrator maxfiy kodi bilan bir xil bo'lishi mumkin emas!",
           });
         }
-        currentStudentCode = updateStudentAccessCode(studentValidation.cleaned);
+        currentStudentCode = await updateStudentAccessCode(studentValidation.cleaned);
         logAdminAction({
           adminUserId: adminRow.id,
           adminEmail: adminRow.email,
@@ -1126,7 +1123,7 @@ export async function createApiApp() {
           return res.status(400).json({ error: adminCodeValidation.error });
         }
 
-        updateAdminSecurityCode(adminId, adminCodeValidation.cleaned);
+        await updateAdminSecurityCode(adminId, adminCodeValidation.cleaned);
         logAdminAction({
           adminUserId: adminRow.id,
           adminEmail: adminRow.email,
@@ -1147,11 +1144,11 @@ export async function createApiApp() {
   });
 
   // --- OPTIONAL TOTP MFA ENDPOINTS FOR ADMINISTRATORS ---
-  app.post('/api/auth/mfa/setup', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/auth/mfa/setup', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const secret = generateTotpSecret();
       const currentCode = generateTotpCode(secret);
-      db.prepare(`UPDATE admins SET totp_secret = ? WHERE id = ?`).run(secret, req.admin!.id);
+      await db.prepare(`UPDATE admins SET totp_secret = ? WHERE id = ?`).run(secret, req.admin!.id);
       const otpauthUrl = `otpauth://totp/EduPayManager:${encodeURIComponent(req.admin!.email)}?secret=${secret}&issuer=EduPayManager`;
       res.json({
         secret,
@@ -1164,18 +1161,17 @@ export async function createApiApp() {
     }
   });
 
-  app.post('/api/auth/mfa/enable', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/auth/mfa/enable', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
-      const row = db
-        .prepare(`SELECT totp_secret FROM admins WHERE id = ?`)
+      const row = await db.prepare(`SELECT totp_secret FROM admins WHERE id = ?`)
         .get(req.admin!.id) as { totp_secret?: string | null } | undefined;
 
       if (!row?.totp_secret || !verifyTotpCode(row.totp_secret, code)) {
         return res.status(400).json({ error: "Tasdiqlash kodi noto'g'ri. Iltimos, 6 xonali kodni tekshiring." });
       }
 
-      db.prepare(`UPDATE admins SET mfa_enabled = 1 WHERE id = ?`).run(req.admin!.id);
+      await db.prepare(`UPDATE admins SET mfa_enabled = 1 WHERE id = ?`).run(req.admin!.id);
       logAdminAction({
         adminUserId: req.admin!.id,
         adminEmail: req.admin!.email,
@@ -1190,9 +1186,9 @@ export async function createApiApp() {
     }
   });
 
-  app.post('/api/auth/mfa/disable', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/auth/mfa/disable', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      db.prepare(`UPDATE admins SET mfa_enabled = 0, totp_secret = NULL WHERE id = ?`).run(req.admin!.id);
+      await db.prepare(`UPDATE admins SET mfa_enabled = 0, totp_secret = NULL WHERE id = ?`).run(req.admin!.id);
       logAdminAction({
         adminUserId: req.admin!.id,
         adminEmail: req.admin!.email,
@@ -1211,17 +1207,17 @@ export async function createApiApp() {
   // PROTECTED ADMIN DATA & MANAGEMENT ENDPOINTS
   // =========================================================
 
-  app.get('/api/admin/bootstrap', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.get('/api/admin/bootstrap', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       res.json({
         admin: req.admin,
         studentAccessCode: getStudentAccessCode(),
-        teachers: getAllTeachers(),
-        groups: getAllGroups(),
-        periods: getAllCollectionPeriods(),
-        submissions: getAllSubmissions(),
-        rosters: getAllRosters(),
-        auditLogs: getRecentAuditLogs(80),
+        teachers: await getAllTeachers(),
+        groups: await getAllGroups(),
+        periods: await getAllCollectionPeriods(),
+        submissions: await getAllSubmissions(),
+        rosters: await getAllRosters(),
+        auditLogs: await getRecentAuditLogs(80),
       });
     } catch (error) {
       console.error('Error in GET /api/admin/bootstrap:', error);
@@ -1243,7 +1239,7 @@ export async function createApiApp() {
     .strict();
 
   // --- TEACHERS CRUD ---
-  app.post('/api/admin/teachers', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/admin/teachers', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const parsed = teacherSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1263,7 +1259,7 @@ export async function createApiApp() {
       const createdAt = new Date().toISOString();
       const recordStatus = status === 'inactive' ? 'inactive' : 'active';
 
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO teachers (id, full_name, subject, phone, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(id, cleanedName, (subject || '').trim(), (phone || '').trim(), recordStatus, createdAt);
@@ -1277,7 +1273,7 @@ export async function createApiApp() {
         metadata: { subject: subject || '', status: recordStatus },
       });
 
-      const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id) as Teacher;
+      const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id) as Teacher;
       res.status(201).json({ teacher });
     } catch (error) {
       console.error('Error creating teacher:', error);
@@ -1285,10 +1281,10 @@ export async function createApiApp() {
     }
   });
 
-  app.put('/api/admin/teachers/:id', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.put('/api/admin/teachers/:id', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id) as Teacher | undefined;
+      const existing = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id) as Teacher | undefined;
       if (!existing) {
         return res.status(404).json({ error: "O'qituvchi topilmadi." });
       }
@@ -1310,7 +1306,7 @@ export async function createApiApp() {
       const phone = typeof parsed.data.phone === 'string' ? parsed.data.phone.trim() : existing.phone || '';
       const status = parsed.data.status || existing.status;
 
-      db.prepare(`
+      await db.prepare(`
         UPDATE teachers
         SET full_name = ?, subject = ?, phone = ?, status = ?
         WHERE id = ?
@@ -1325,7 +1321,7 @@ export async function createApiApp() {
         metadata: { previousStatus: existing.status, newStatus: status },
       });
 
-      const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id) as Teacher;
+      const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id) as Teacher;
       res.json({ teacher });
     } catch (error) {
       console.error('Error updating teacher:', error);
@@ -1333,23 +1329,23 @@ export async function createApiApp() {
     }
   });
 
-  app.delete('/api/admin/teachers/:id', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.delete('/api/admin/teachers/:id', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id) as Teacher | undefined;
+      const existing = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id) as Teacher | undefined;
       if (!existing) {
         return res.status(404).json({ error: "O'qituvchi topilmadi." });
       }
 
       const groupCount = (
-        db.prepare(`SELECT COUNT(*) as count FROM groups WHERE teacher_id = ?`).get(id) as { count: number }
+        await db.prepare(`SELECT COUNT(*) as count FROM groups WHERE teacher_id = ?`).get(id) as { count: number }
       ).count;
       const subCount = (
-        db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE teacher_id = ?`).get(id) as { count: number }
+        await db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE teacher_id = ?`).get(id) as { count: number }
       ).count;
 
       if (groupCount > 0 || subCount > 0) {
-        db.prepare(`UPDATE teachers SET status = 'archived' WHERE id = ?`).run(id);
+        await db.prepare(`UPDATE teachers SET status = 'archived' WHERE id = ?`).run(id);
         logAdminAction({
           adminUserId: req.admin!.id,
           adminEmail: req.admin!.email,
@@ -1357,7 +1353,7 @@ export async function createApiApp() {
           affectedRecordId: id,
           details: `${existing.full_name} tarixiy ma'lumotlar mavjudligi sababli arxivlandi.`,
         });
-        const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id) as Teacher;
+        const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(id) as Teacher;
         return res.json({
           action: 'archived',
           teacher,
@@ -1366,7 +1362,7 @@ export async function createApiApp() {
         });
       }
 
-      db.prepare(`DELETE FROM teachers WHERE id = ?`).run(id);
+      await db.prepare(`DELETE FROM teachers WHERE id = ?`).run(id);
       logAdminAction({
         adminUserId: req.admin!.id,
         adminEmail: req.admin!.email,
@@ -1391,7 +1387,7 @@ export async function createApiApp() {
     .strict();
 
   // --- GROUPS CRUD ---
-  app.post('/api/admin/groups', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/admin/groups', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const parsed = groupSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1402,7 +1398,7 @@ export async function createApiApp() {
       const { group_name, teacher_id, schedule_info, status } = parsed.data;
       const cleanedGroupName = group_name.trim();
 
-      const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(teacher_id) as Teacher | undefined;
+      const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(teacher_id) as Teacher | undefined;
       if (!teacher) {
         return res.status(400).json({ error: "Tanlangan o'qituvchi topilmadi." });
       }
@@ -1411,7 +1407,7 @@ export async function createApiApp() {
       const createdAt = new Date().toISOString();
       const recordStatus = status === 'inactive' ? 'inactive' : 'active';
 
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO groups (id, group_name, teacher_id, schedule_info, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(id, cleanedGroupName, teacher.id, (schedule_info || '').trim(), recordStatus, createdAt);
@@ -1424,7 +1420,7 @@ export async function createApiApp() {
         details: `Yangi guruh yaratildi: ${cleanedGroupName} (O'qituvchi: ${teacher.full_name})`,
       });
 
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id) as Group;
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id) as Group;
       res.status(201).json({ group });
     } catch (error) {
       console.error('Error creating group:', error);
@@ -1432,10 +1428,10 @@ export async function createApiApp() {
     }
   });
 
-  app.put('/api/admin/groups/:id', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.put('/api/admin/groups/:id', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id) as Group | undefined;
+      const existing = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id) as Group | undefined;
       if (!existing) {
         return res.status(404).json({ error: 'Guruh topilmadi.' });
       }
@@ -1452,7 +1448,7 @@ export async function createApiApp() {
       }
 
       const teacherId = parsed.data.teacher_id || existing.teacher_id;
-      const teacher = db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(teacherId) as Teacher | undefined;
+      const teacher = await db.prepare(`SELECT * FROM teachers WHERE id = ?`).get(teacherId) as Teacher | undefined;
       if (!teacher) {
         return res.status(400).json({ error: "Tanlangan o'qituvchi topilmadi." });
       }
@@ -1463,7 +1459,7 @@ export async function createApiApp() {
           : existing.schedule_info || '';
       const status = parsed.data.status || existing.status;
 
-      db.prepare(`
+      await db.prepare(`
         UPDATE groups
         SET group_name = ?, teacher_id = ?, schedule_info = ?, status = ?
         WHERE id = ?
@@ -1477,7 +1473,7 @@ export async function createApiApp() {
         details: `Guruh yangilandi: ${groupName} (${status})`,
       });
 
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id) as Group;
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id) as Group;
       res.json({ group });
     } catch (error) {
       console.error('Error updating group:', error);
@@ -1485,20 +1481,20 @@ export async function createApiApp() {
     }
   });
 
-  app.delete('/api/admin/groups/:id', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.delete('/api/admin/groups/:id', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id) as Group | undefined;
+      const existing = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id) as Group | undefined;
       if (!existing) {
         return res.status(404).json({ error: 'Guruh topilmadi.' });
       }
 
       const subCount = (
-        db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE group_id = ?`).get(id) as { count: number }
+        await db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE group_id = ?`).get(id) as { count: number }
       ).count;
 
       if (subCount > 0) {
-        db.prepare(`UPDATE groups SET status = 'archived' WHERE id = ?`).run(id);
+        await db.prepare(`UPDATE groups SET status = 'archived' WHERE id = ?`).run(id);
         logAdminAction({
           adminUserId: req.admin!.id,
           adminEmail: req.admin!.email,
@@ -1506,7 +1502,7 @@ export async function createApiApp() {
           affectedRecordId: id,
           details: `${existing.group_name} guruhida tarixiy to'lov yozuvlari borligi sababli arxivlandi.`,
         });
-        const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id) as Group;
+        const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(id) as Group;
         return res.json({
           action: 'archived',
           group,
@@ -1515,7 +1511,7 @@ export async function createApiApp() {
         });
       }
 
-      db.prepare(`DELETE FROM groups WHERE id = ?`).run(id);
+      await db.prepare(`DELETE FROM groups WHERE id = ?`).run(id);
       logAdminAction({
         adminUserId: req.admin!.id,
         adminEmail: req.admin!.email,
@@ -1543,7 +1539,7 @@ export async function createApiApp() {
     })
     .strict();
 
-  app.post('/api/admin/periods', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/admin/periods', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const parsed = periodCreateSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1580,13 +1576,13 @@ export async function createApiApp() {
       const targetStatus = status === 'active' ? 'active' : status === 'closed' ? 'closed' : 'inactive';
 
       if (targetStatus === 'active') {
-        db.prepare(`UPDATE collection_periods SET status = 'closed' WHERE status = 'active'`).run();
+        await db.prepare(`UPDATE collection_periods SET status = 'closed' WHERE status = 'active'`).run();
       }
 
       const id = `prd-${yr}-${String(mNum).padStart(2, '0')}-${crypto.randomUUID().slice(0, 6)}`;
       const createdAt = new Date().toISOString();
 
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO collection_periods (
           id, month_name, month_number, year, title,
           start_date, closing_date, allowed_payment_start_date, allowed_payment_end_date,
@@ -1614,7 +1610,7 @@ export async function createApiApp() {
         details: `Yangi oylik yig'im yaratildi: ${title} (Holati: ${targetStatus})`,
       });
 
-      const periods = getAllCollectionPeriods();
+      const periods = await getAllCollectionPeriods();
       res.status(201).json({ periods });
     } catch (error) {
       console.error('Error creating collection period:', error);
@@ -1634,10 +1630,10 @@ export async function createApiApp() {
     })
     .strict();
 
-  app.put('/api/admin/periods/:id', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.put('/api/admin/periods/:id', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM collection_periods WHERE id = ?`).get(id) as
+      const existing = await db.prepare(`SELECT * FROM collection_periods WHERE id = ?`).get(id) as
         | CollectionPeriod
         | undefined;
       if (!existing) {
@@ -1668,10 +1664,10 @@ export async function createApiApp() {
       }
 
       if (status === 'active') {
-        db.prepare(`UPDATE collection_periods SET status = 'closed' WHERE status = 'active' AND id != ?`).run(id);
+        await db.prepare(`UPDATE collection_periods SET status = 'closed' WHERE status = 'active' AND id != ?`).run(id);
       }
 
-      db.prepare(`
+      await db.prepare(`
         UPDATE collection_periods
         SET start_date = ?, closing_date = ?, allowed_payment_start_date = ?, allowed_payment_end_date = ?, status = ?
         WHERE id = ?
@@ -1685,7 +1681,7 @@ export async function createApiApp() {
         details: `${existing.title} oylik yig'im davri yangilandi (Holati: ${status})`,
       });
 
-      res.json({ periods: getAllCollectionPeriods() });
+      res.json({ periods: await getAllCollectionPeriods() });
     } catch (error) {
       console.error('Error updating period:', error);
       res.status(500).json({ error: "Oylik yig'im davrini yangilashda xatolik yuz berdi." });
@@ -1705,7 +1701,7 @@ export async function createApiApp() {
     })
     .strict();
 
-  app.post('/api/admin/submissions', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/admin/submissions', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const parsed = adminSubmissionCreateSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1724,14 +1720,13 @@ export async function createApiApp() {
         allow_duplicate,
       } = parsed.data;
 
-      const period = db
-        .prepare(`SELECT * FROM collection_periods WHERE id = ?`)
+      const period = await db.prepare(`SELECT * FROM collection_periods WHERE id = ?`)
         .get(collection_period_id) as CollectionPeriod | undefined;
       if (!period) {
         return res.status(400).json({ error: "Oylik yig'im davri topilmadi." });
       }
 
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(group_id) as Group | undefined;
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(group_id) as Group | undefined;
       if (!group) {
         return res.status(400).json({ error: 'Guruh topilmadi.' });
       }
@@ -1751,8 +1746,7 @@ export async function createApiApp() {
       const normalizedName = normalizeStudentName(cleanedName);
 
       if (!allow_duplicate) {
-        const dup = db
-          .prepare(
+        const dup = await db.prepare(
             `SELECT id FROM submissions WHERE collection_period_id = ? AND group_id = ? AND normalized_student_name = ? LIMIT 1`
           )
           .get(period.id, group.id, normalizedName);
@@ -1768,7 +1762,7 @@ export async function createApiApp() {
       const id = `sub-${crypto.randomUUID()}`;
       const nowIso = new Date().toISOString();
 
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO submissions (
           id, collection_period_id, teacher_id, group_id,
           student_full_name, normalized_student_name, payment_date,
@@ -1795,7 +1789,7 @@ export async function createApiApp() {
         details: `Administrator tomonidan o'quvchi qo'shildi: ${cleanedName} (${formatDateUz(payment_date)})`,
       });
 
-      const submission = db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id) as Submission;
+      const submission = await db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id) as Submission;
       res.status(201).json({ submission });
     } catch (error) {
       console.error('Error in POST /api/admin/submissions:', error);
@@ -1815,10 +1809,10 @@ export async function createApiApp() {
     })
     .strict();
 
-  app.put('/api/admin/submissions/:id', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.put('/api/admin/submissions/:id', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id) as Submission | undefined;
+      const existing = await db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id) as Submission | undefined;
       if (!existing) {
         return res.status(404).json({ error: "O'quvchi yozuvi topilmadi." });
       }
@@ -1844,15 +1838,14 @@ export async function createApiApp() {
       }
 
       const groupId = parsed.data.group_id || existing.group_id;
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(groupId) as Group | undefined;
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(groupId) as Group | undefined;
       if (!group) {
         return res.status(400).json({ error: 'Tanlangan guruh topilmadi.' });
       }
 
       const normalizedName = normalizeStudentName(nameValidation.cleaned);
       if (!parsed.data.allow_duplicate) {
-        const dup = db
-          .prepare(
+        const dup = await db.prepare(
             `SELECT id FROM submissions WHERE collection_period_id = ? AND group_id = ? AND normalized_student_name = ? AND id != ? LIMIT 1`
           )
           .get(existing.collection_period_id, group.id, normalizedName, id);
@@ -1868,7 +1861,7 @@ export async function createApiApp() {
       const note = typeof parsed.data.note === 'string' ? parsed.data.note.trim() : existing.note || '';
       const nowIso = new Date().toISOString();
 
-      db.prepare(`
+      await db.prepare(`
         UPDATE submissions
         SET student_full_name = ?, normalized_student_name = ?, payment_date = ?,
             group_id = ?, teacher_id = ?, note = ?, updated_at = ?
@@ -1897,7 +1890,7 @@ export async function createApiApp() {
         },
       });
 
-      const submission = db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id) as Submission;
+      const submission = await db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id) as Submission;
       res.json({ submission });
     } catch (error) {
       console.error('Error in PUT /api/admin/submissions/:id:', error);
@@ -1905,15 +1898,15 @@ export async function createApiApp() {
     }
   });
 
-  app.delete('/api/admin/submissions/:id', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.delete('/api/admin/submissions/:id', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id) as Submission | undefined;
+      const existing = await db.prepare(`SELECT * FROM submissions WHERE id = ?`).get(id) as Submission | undefined;
       if (!existing) {
         return res.status(404).json({ error: "O'quvchi yozuvi topilmadi." });
       }
 
-      db.prepare(`DELETE FROM submissions WHERE id = ?`).run(id);
+      await db.prepare(`DELETE FROM submissions WHERE id = ?`).run(id);
       logAdminAction({
         adminUserId: req.admin!.id,
         adminEmail: req.admin!.email,
@@ -1937,7 +1930,7 @@ export async function createApiApp() {
     })
     .strict();
 
-  app.post('/api/admin/rosters', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/admin/rosters', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const parsed = rosterSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1945,7 +1938,7 @@ export async function createApiApp() {
       }
       const { group_id, student_names } = parsed.data;
 
-      const group = db.prepare(`SELECT * FROM groups WHERE id = ?`).get(group_id) as Group | undefined;
+      const group = await db.prepare(`SELECT * FROM groups WHERE id = ?`).get(group_id) as Group | undefined;
       if (!group) {
         return res.status(404).json({ error: 'Guruh topilmadi.' });
       }
@@ -1959,19 +1952,18 @@ export async function createApiApp() {
       ).sort(compareUzbekNames);
 
       const nowIso = new Date().toISOString();
-      const existing = db
-        .prepare(`SELECT id FROM student_rosters WHERE group_id = ?`)
+      const existing = await db.prepare(`SELECT id FROM student_rosters WHERE group_id = ?`)
         .get(group_id) as { id: string } | undefined;
 
       const recordId = existing ? existing.id : `rst-${crypto.randomUUID()}`;
       if (existing) {
-        db.prepare(`
+        await db.prepare(`
           UPDATE student_rosters
           SET student_names_json = ?, updated_at = ?
           WHERE group_id = ?
         `).run(JSON.stringify(cleanedList), nowIso, group_id);
       } else {
-        db.prepare(`
+        await db.prepare(`
           INSERT INTO student_rosters (id, group_id, student_names_json, updated_at)
           VALUES (?, ?, ?, ?)
         `).run(recordId, group_id, JSON.stringify(cleanedList), nowIso);
@@ -1985,17 +1977,17 @@ export async function createApiApp() {
         details: `${group.group_name} guruhi uchun ${cleanedList.length} nafar o'quvchi ro'yxati saqlandi.`,
       });
 
-      res.json({ rosters: getAllRosters() });
+      res.json({ rosters: await getAllRosters() });
     } catch (error) {
       console.error('Error saving roster:', error);
       res.status(500).json({ error: "Guruh ro'yxatini saqlashda xatolik yuz berdi." });
     }
   });
 
-  app.delete('/api/admin/rosters/:groupId', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.delete('/api/admin/rosters/:groupId', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { groupId } = req.params;
-      db.prepare(`DELETE FROM student_rosters WHERE group_id = ?`).run(groupId);
+      await db.prepare(`DELETE FROM student_rosters WHERE group_id = ?`).run(groupId);
       logAdminAction({
         adminUserId: req.admin!.id,
         adminEmail: req.admin!.email,
@@ -2003,7 +1995,7 @@ export async function createApiApp() {
         affectedRecordId: groupId,
         details: `Guruh o'quvchilar ro'yxati o'chirildi (Group ID: ${groupId}).`,
       });
-      res.json({ rosters: getAllRosters() });
+      res.json({ rosters: await getAllRosters() });
     } catch (error) {
       console.error('Error deleting roster:', error);
       res.status(500).json({ error: "Guruh ro'yxatini o'chirishda xatolik yuz berdi." });
@@ -2017,7 +2009,7 @@ export async function createApiApp() {
       const teacherId = typeof req.query.teacherId === 'string' ? req.query.teacherId : undefined;
       const groupId = typeof req.query.groupId === 'string' ? req.query.groupId : undefined;
 
-      const periods = getAllCollectionPeriods();
+      const periods = await getAllCollectionPeriods();
       const targetPeriod =
         (periodId ? periods.find((p) => p.id === periodId) : undefined) ||
         periods.find((p) => p.status === 'active') ||
@@ -2029,9 +2021,9 @@ export async function createApiApp() {
 
       const { buffer, filename } = await generateSubmissionsExcelBuffer({
         period: targetPeriod,
-        submissions: getAllSubmissions(),
-        teachers: getAllTeachers(),
-        groups: getAllGroups(),
+        submissions: await getAllSubmissions(),
+        teachers: await getAllTeachers(),
+        groups: await getAllGroups(),
         selectedTeacherId: teacherId,
         selectedGroupId: groupId,
       });
@@ -2058,15 +2050,15 @@ export async function createApiApp() {
   });
 
   // --- CLEAR ALL TEACHERS, GROUPS, AND SUBMISSIONS ---
-  app.post('/api/admin/clear-all-data', requireAdminAuth, (req: AuthenticatedRequest, res: Response) => {
+  app.post('/api/admin/clear-all-data', requireAdminAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      purgeAllTeacherAndGroupData(req.admin!.id, req.admin!.email);
+      await purgeAllTeacherAndGroupData(req.admin!.id, req.admin!.email);
       res.json({
         success: true,
         message: "Barcha o'qituvchilar, guruhlar, ro'yxatlar va to'lov arizalari muvaffaqiyatli tozalandi.",
-        teachers: getAllTeachers(),
-        groups: getAllGroups(),
-        submissions: getAllSubmissions(),
+        teachers: await getAllTeachers(),
+        groups: await getAllGroups(),
+        submissions: await getAllSubmissions(),
       });
     } catch (error) {
       console.error('Error clearing data:', error);
